@@ -1,0 +1,265 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Montserrat:wght@600;700;800;900&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --primary: 37 99 235;
+    --primary-dark: 30 64 175;
+    --sidebar-width: 260px;
+  }
+
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply font-sans bg-healthcare-light text-gray-800 antialiased;
+    font-size: 14px;
+  }
+
+  ::-webkit-scrollbar {
+    width: 5px;
+    height: 5px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-100;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-blue-300 rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-blue-400;
+  }
+}
+
+@layer components {
+  /* Glass card */
+  .glass-card {
+    @apply bg-white/85 backdrop-blur-md border border-white/40 shadow-glass rounded-2xl;
+  }
+
+  /* Premium card */
+  .premium-card {
+    @apply bg-white rounded-2xl shadow-card border border-gray-100/80 hover:shadow-card-hover transition-shadow duration-300;
+  }
+
+  /* Gradient header */
+  .gradient-header {
+    background: linear-gradient(135deg, #0f2460 0%, #1e3a8a 40%, #1d4ed8 80%, #2563eb 100%);
+  }
+
+  /* Stat card gradient variants */
+  .stat-card-blue {
+    background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+  }
+
+  .stat-card-teal {
+    background: linear-gradient(135deg, #0f766e 0%, #14b8a6 100%);
+  }
+
+  .stat-card-green {
+    background: linear-gradient(135deg, #15803d 0%, #22c55e 100%);
+  }
+
+  .stat-card-orange {
+    background: linear-gradient(135deg, #c2410c 0%, #f97316 100%);
+  }
+
+  .stat-card-purple {
+    background: linear-gradient(135deg, #6d28d9 0%, #a78bfa 100%);
+  }
+
+  .stat-card-red {
+    background: linear-gradient(135deg, #b91c1c 0%, #f87171 100%);
+  }
+
+  .stat-card-indigo {
+    background: linear-gradient(135deg, #3730a3 0%, #6366f1 100%);
+  }
+
+  .stat-card-pink {
+    background: linear-gradient(135deg, #9d174d 0%, #ec4899 100%);
+  }
+
+  /* Sidebar */
+  .sidebar-nav-item {
+    @apply flex items-center gap-3 px-4 py-2.5 rounded-xl text-blue-100/80 hover:text-white hover:bg-white/10 transition-all duration-200 cursor-pointer text-sm font-medium;
+  }
+
+  .sidebar-nav-item.active {
+    @apply bg-white/15 text-white shadow-sm;
+  }
+
+  /* Badge */
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold border;
+  }
+
+  /* Button variants */
+  .btn-primary {
+    @apply inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-xl transition-all duration-200 shadow-sm hover:shadow-md active:scale-95;
+  }
+
+  .btn-secondary {
+    @apply inline-flex items-center gap-2 px-4 py-2 bg-white hover:bg-gray-50 text-gray-700 font-medium rounded-xl border border-gray-200 transition-all duration-200 shadow-sm;
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center gap-2 px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-medium rounded-xl transition-all duration-200 shadow-sm;
+  }
+
+  /* Form inputs */
+  .form-input {
+    @apply w-full px-4 py-2.5 bg-white border border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-400 transition-all duration-200 placeholder:text-gray-400;
+  }
+
+  .form-label {
+    @apply block text-xs font-semibold text-gray-600 mb-1.5 uppercase tracking-wide;
+  }
+
+  /* Table */
+  .data-table {
+    @apply w-full text-sm;
+  }
+
+  .data-table thead {
+    @apply bg-gray-50 border-b border-gray-200;
+  }
+
+  .data-table thead th {
+    @apply px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap;
+  }
+
+  .data-table tbody tr {
+    @apply border-b border-gray-100 hover:bg-blue-50/40 transition-colors duration-150;
+  }
+
+  .data-table tbody td {
+    @apply px-4 py-3 text-gray-700;
+  }
+
+  /* Workflow kanban */
+  .kanban-column {
+    @apply bg-gray-50 rounded-2xl p-4 min-h-[400px] border border-gray-200;
+  }
+
+  /* QR card */
+  .qr-card {
+    @apply bg-white rounded-2xl p-6 shadow-card border border-gray-100 text-center hover:shadow-card-hover transition-shadow;
+  }
+
+  /* Notification item */
+  .notification-item {
+    @apply flex gap-3 p-4 rounded-xl hover:bg-gray-50 transition-colors border border-transparent hover:border-gray-200;
+  }
+
+  .notification-item.unread {
+    @apply bg-blue-50/50 border-blue-100;
+  }
+
+  /* Page header */
+  .page-header {
+    @apply mb-6;
+  }
+
+  .page-title {
+    @apply text-2xl font-bold text-gray-900;
+  }
+
+  .page-subtitle {
+    @apply text-sm text-gray-500 mt-1;
+  }
+
+  /* Progress bar */
+  .progress-bar {
+    @apply h-2 bg-gray-200 rounded-full overflow-hidden;
+  }
+
+  .progress-fill {
+    @apply h-full rounded-full transition-all duration-700;
+  }
+
+  /* Shimmer loading */
+  .shimmer {
+    background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+    background-size: 200% 100%;
+    animation: shimmer 1.5s infinite;
+  }
+
+  /* Glassmorphism panel */
+  .glass-panel {
+    background: rgba(255, 255, 255, 0.7);
+    backdrop-filter: blur(20px);
+    border: 1px solid rgba(255, 255, 255, 0.5);
+    box-shadow: 0 8px 32px rgba(31, 38, 135, 0.1);
+    border-radius: 1rem;
+  }
+
+  /* Status dot */
+  .status-dot {
+    @apply inline-block w-2 h-2 rounded-full;
+  }
+
+  /* Avatar */
+  .avatar {
+    @apply rounded-full object-cover bg-blue-100 flex items-center justify-center font-semibold text-blue-600;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .gradient-text {
+    background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+}
+
+/* Recharts customization */
+.recharts-tooltip-wrapper {
+  border-radius: 12px !important;
+  overflow: hidden;
+}
+
+.recharts-default-tooltip {
+  border-radius: 12px !important;
+  border: 1px solid #e2e8f0 !important;
+  box-shadow: 0 10px 30px rgba(0,0,0,0.1) !important;
+}
+
+/* Framer motion page transitions */
+.page-enter {
+  opacity: 0;
+  transform: translateY(10px);
+}
+
+.page-enter-active {
+  opacity: 1;
+  transform: translateY(0);
+  transition: opacity 300ms, transform 300ms;
+}
