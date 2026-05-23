@@ -1,0 +1,60 @@
+# PMNH Jazan Research Portal — Docker Compose
+#
+# Usage:
+#   docker compose up -d           # build + run in background
+#   docker compose logs -f portal  # tail logs
+#   docker compose down            # stop and remove
+#
+# Production deployments should set these env vars in a real .env or via
+# their secrets manager (Vault, AWS SSM, Vercel env vars, etc.) — do not
+# commit live keys to source control.
+
+services:
+  portal:
+    container_name: pmnh-research-portal
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        # Public env vars are baked into the build because Next.js inlines
+        # them into the client bundle at build time.
+        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY:-}
+        NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
+    image: pmnh-research-portal:latest
+    restart: unless-stopped
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      # Server-only secrets — read at runtime, never inlined into the bundle.
+      NODE_ENV: production
+      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_PHONE_NUMBER: ${TWILIO_PHONE_NUMBER:-}
+      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-}
+      JWT_SECRET: ${JWT_SECRET:-}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:3000/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    # Hardening — no shell, no extra capabilities, read-only root FS.
+    read_only: true
+    tmpfs:
+      - /tmp:rw,size=64m
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

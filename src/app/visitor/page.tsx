@@ -1,10 +1,11 @@
 'use client'
-import { useState, useMemo } from 'react'
-import { motion } from 'framer-motion'
+import { useEffect, useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Activity, Search, Filter, BookOpen, Globe, ExternalLink,
+  Activity, AlertCircle, Search, Filter, BookOpen, Globe, ExternalLink,
   Building2, Calendar, ArrowLeft, BarChart2, Users, FlaskConical,
-  ChevronRight, Eye
+  ChevronRight, Eye, LogIn, LogOut, Lock,
 } from 'lucide-react'
 import Link from 'next/link'
 import { DEMO_RESEARCH, DEMO_DEPARTMENTS, DEMO_STATS } from '@/lib/demo-data'
@@ -13,10 +14,27 @@ import { cn, formatDate, getStatusBadgeClass } from '@/lib/utils'
 const publicResearch = DEMO_RESEARCH.filter(r => r.is_public || r.publication_status === 'published')
 
 export default function VisitorPortalPage() {
+  const params = useSearchParams()
   const [search, setSearch] = useState('')
   const [deptFilter, setDeptFilter] = useState('all')
   const [yearFilter, setYearFilter] = useState('all')
   const [selected, setSelected] = useState<string | null>(null)
+
+  // Visitor session signals — set by clicking "Continue as Visitor" on /login.
+  // Hydrated client-side so SSR stays stable.
+  const [isVisitorSession, setIsVisitorSession] = useState(false)
+  useEffect(() => {
+    setIsVisitorSession(/(?:^|;\s*)pmnh-visitor=1/.test(document.cookie))
+  }, [])
+
+  function exitVisitor() {
+    document.cookie = 'pmnh-visitor=; path=/; max-age=0'
+    setIsVisitorSession(false)
+    window.location.assign('/login')
+  }
+
+  const blocked = params.get('blocked') === '1'
+  const blockedFrom = params.get('from') || ''
 
   const filtered = useMemo(() => {
     return publicResearch.filter(r => {
@@ -33,6 +51,55 @@ export default function VisitorPortalPage() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-950 via-blue-900 to-blue-800">
+
+      {/* Visitor-mode banner — shown for the active visitor session, and the
+          deep-link-blocked message when middleware redirected from a gated path. */}
+      <AnimatePresence>
+        {isVisitorSession && (
+          <motion.div
+            initial={{ opacity: 0, y: -8, height: 0 }}
+            animate={{ opacity: 1, y: 0, height: 'auto' }}
+            exit={{ opacity: 0, y: -8, height: 0 }}
+            className="bg-amber-500/95 text-amber-950 text-sm shadow-md"
+            role="status"
+          >
+            <div className="max-w-7xl mx-auto px-4 py-2.5 flex flex-wrap items-center gap-3">
+              <span className="inline-flex items-center gap-2 font-bold">
+                <Lock className="w-4 h-4" />
+                Visitor mode — read only
+              </span>
+              {blocked && (
+                <span className="text-amber-900 inline-flex items-center gap-1">
+                  <AlertCircle className="w-3.5 h-3.5" />
+                  <code className="bg-amber-100/70 px-1 rounded font-mono text-[11px]">{blockedFrom || '/dashboard'}</code>
+                  is staff-only — sign in to access.
+                </span>
+              )}
+              <span className="text-amber-900/80 hidden md:inline">
+                You can browse approved public research below. Edit, upload, delete and admin actions are disabled.
+              </span>
+              <div className="ms-auto flex items-center gap-2">
+                <Link
+                  href="/login"
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-white/80 hover:bg-white text-amber-900 font-bold text-xs transition-colors"
+                >
+                  <LogIn className="w-3.5 h-3.5" />
+                  Staff sign in
+                </Link>
+                <button
+                  type="button"
+                  onClick={exitVisitor}
+                  className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-amber-900/10 hover:bg-amber-900/20 text-amber-950 font-bold text-xs transition-colors"
+                >
+                  <LogOut className="w-3.5 h-3.5" />
+                  Exit visitor mode
+                </button>
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Header */}
       <header className="gradient-header shadow-lg">
         <div className="max-w-7xl mx-auto px-4 py-5">
@@ -40,8 +107,8 @@ export default function VisitorPortalPage() {
             <div className="flex items-center gap-4">
               <div className="w-14 h-14 rounded-2xl overflow-hidden flex items-center justify-center bg-white shadow-lg flex-shrink-0">
                 <img
-                  src="/hospital-logo.png"
-                  alt="PMNH"
+                  src="/jazan-health-cluster.jpg"
+                  alt="Jazan Health Cluster"
                   className="w-12 h-12 object-contain"
                   onError={(e) => {
                     const t = e.currentTarget

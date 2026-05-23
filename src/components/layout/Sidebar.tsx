@@ -3,11 +3,40 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { motion, AnimatePresence } from 'framer-motion'
+// ----- Sidebar icon convention -----
+// • All icons are from lucide-react (consistent stroke, line-cap, and visual weight).
+// • Sizes:  w-4 h-4 (16px) when sidebar is expanded
+//           w-5 h-5 (20px) when collapsed, for one-glance recognition
+//           w-3 h-3 (12px) for the group-header chevron (subtle)
+// • Color:  no per-icon color is set — every icon inherits `currentColor`
+//           from its parent <Link>, which switches between text-blue-100/70
+//           (idle), text-white (active / hover), and red-on-logout. This is
+//           what keeps the whole sidebar visually unified.
+// • Item icons are chosen to map 1:1 to the concept of each route:
+//   - LayoutDashboard → /dashboard
+//   - CircleUser      → /profile (personal — visually distinct from `Users`)
+//   - FlaskConical    → /research
+//   - Kanban          → /workflow (the actual Kanban board)
+//   - BookOpen        → /publications
+//   - QrCode          → /qr-codes
+//   - BrainCircuit    → /ai-insights (reads as "AI")
+//   - FileBarChart    → /reports
+//   - Building2       → /departments
+//   - Users           → /users (plural — distinct from CircleUser)
+//   - Bell            → /notifications (with red badge dot)
+//   - ScrollText      → /activity-logs
+//   - HardDrive       → /storage
+//   - ShieldCheck     → /admin (security/authority)
+//   - Settings        → /settings
+//   - DatabaseBackup  → /backup (specifically the backup glyph)
+//   - Globe           → /visitor (public portal)
 import {
   LayoutDashboard, FlaskConical, BookOpen, Building2, FileBarChart,
-  Bell, Users, QrCode, Brain, Settings, LogOut, ChevronLeft,
-  ChevronRight, Activity, GitBranch, ScrollText, HardDrive,
-  ChevronDown, X, Globe, Database
+  Bell, Users, QrCode, BrainCircuit, Settings, LogOut, ChevronLeft,
+  ChevronRight, Kanban, ScrollText, HardDrive,
+  ChevronDown, X, Globe, DatabaseBackup, CircleUser, ShieldCheck,
+  // Activities group icons
+  GraduationCap, UserRound, BookMarked, Presentation, Cloud,
 } from 'lucide-react'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn, getInitials } from '@/lib/utils'
@@ -19,43 +48,55 @@ const NAV_ITEMS = [
   {
     group: 'Main',
     items: [
-      { label: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
-    ]
+      { label: 'Dashboard',         href: '/dashboard', icon: LayoutDashboard },
+      { label: 'My Profile',        href: '/profile',   icon: CircleUser },
+    ],
   },
   {
     group: 'Research',
     items: [
-      { label: 'Research Database', href: '/research', icon: FlaskConical },
-      { label: 'Workflow Board', href: '/workflow', icon: GitBranch },
-      { label: 'Publications', href: '/publications', icon: BookOpen },
-      { label: 'QR / Barcode', href: '/qr-codes', icon: QrCode },
-    ]
+      { label: 'Research Database', href: '/research',     icon: FlaskConical },
+      { label: 'Workflow Board',    href: '/workflow',     icon: Kanban },
+      { label: 'Publications',      href: '/publications', icon: BookOpen },
+      { label: 'QR / Barcode',      href: '/qr-codes',     icon: QrCode },
+    ],
+  },
+  {
+    group: 'Activities',
+    items: [
+      { label: 'Courses & Workshops', href: '/courses',       icon: GraduationCap },
+      { label: 'Participants',        href: '/participants',  icon: UserRound },
+      { label: 'Journal Club',        href: '/journal-club',  icon: BookMarked },
+      { label: 'Conferences',         href: '/conferences',   icon: Presentation },
+    ],
   },
   {
     group: 'Analytics',
     items: [
-      { label: 'AI Insights', href: '/ai-insights', icon: Brain },
-      { label: 'Reports', href: '/reports', icon: FileBarChart },
-    ]
+      { label: 'AI Insights', href: '/ai-insights', icon: BrainCircuit },
+      { label: 'Reports',     href: '/reports',     icon: FileBarChart },
+    ],
   },
   {
     group: 'Management',
     items: [
-      { label: 'Departments', href: '/departments', icon: Building2 },
-      { label: 'Users & Roles', href: '/users', icon: Users },
-      { label: 'Notifications', href: '/notifications', icon: Bell, badge: true },
-      { label: 'Activity Logs', href: '/activity-logs', icon: ScrollText },
-      { label: 'File Storage', href: '/storage', icon: HardDrive },
-    ]
+      { label: 'Departments',    href: '/departments',    icon: Building2 },
+      { label: 'Users & Roles',  href: '/users',          icon: Users },
+      { label: 'Notifications',  href: '/notifications',  icon: Bell, badge: true },
+      { label: 'Activity Logs',  href: '/activity-logs',  icon: ScrollText },
+      { label: 'File Storage',   href: '/storage',        icon: HardDrive },
+      { label: 'Google Drive',   href: '/google-drive',   icon: Cloud },
+    ],
   },
   {
     group: 'System',
     items: [
-      { label: 'Settings', href: '/settings', icon: Settings },
-      { label: 'Backup Management', href: '/backup', icon: Database },
-      { label: 'Public Portal', href: '/visitor', icon: Globe, external: true },
-    ]
-  }
+      { label: 'Admin Panel',        href: '/admin',    icon: ShieldCheck },
+      { label: 'Settings',           href: '/settings', icon: Settings },
+      { label: 'Backup Management',  href: '/backup',   icon: DatabaseBackup },
+      { label: 'Public Portal',      href: '/visitor',  icon: Globe, external: true },
+    ],
+  },
 ]
 
 interface SidebarProps {
@@ -69,7 +110,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
   const pathname = usePathname()
   const { user, logout } = useAuthStore()
   const router = useRouter()
-  const [expandedGroups, setExpandedGroups] = useState<string[]>(['Main', 'Research', 'Analytics', 'Management', 'System'])
+  const [expandedGroups, setExpandedGroups] = useState<string[]>(['Main', 'Research', 'Activities', 'Analytics', 'Management', 'System'])
 
   const handleLogout = () => {
     logout()
@@ -91,8 +132,8 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
         <div className="flex-shrink-0 w-10 h-10 rounded-xl overflow-hidden flex items-center justify-center"
           style={{ background: 'rgba(255,255,255,0.12)' }}>
           <img
-            src="/hospital-logo.png"
-            alt="PMNH Logo"
+            src="/jazan-health-cluster.jpg"
+            alt="Jazan Health Cluster"
             className="w-9 h-9 object-contain"
             onError={(e) => {
               const t = e.currentTarget

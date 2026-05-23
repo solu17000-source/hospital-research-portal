@@ -44,8 +44,8 @@ export function TopBar({ onMenuClick, sidebarCollapsed }: TopBarProps) {
           </button>
           <div className="hidden sm:flex items-center gap-3">
             <img
-              src="/hospital-logo.png"
-              alt="PMNH"
+              src="/jazan-health-cluster.jpg"
+              alt="Jazan Health Cluster"
               className="w-8 h-8 object-contain flex-shrink-0"
               onError={(e) => { const t = e.currentTarget; t.onerror = null; t.src = '/hospital-logo.svg' }}
             />

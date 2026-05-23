@@ -1,229 +1,182 @@
-# PMNH Jazan Research Portal — Setup Instructions
+# PMNH Jazan Research Portal — Setup
 
-## Health & Nursing Research Unit
-### Prince Mohammed Bin Nasser Hospital, Jazan, Saudi Arabia
+**Health & Nursing Research Unit · Prince Mohammed Bin Nasser Hospital · Jazan**
+
+This document walks through three deployment paths: local demo mode (no backend), local with a live Supabase project, and containerized production via Docker.
+
+For variable-by-variable detail, see [`ENVIRONMENT.md`](./ENVIRONMENT.md).
 
 ---
 
-## Quick Start (Demo Mode)
-
-The application runs in **Demo Mode** out of the box — no database setup required.
+## 1. Quick start — demo mode (no Supabase needed)
 
 ```bash
-# 1. Navigate to project directory
+git clone https://github.com/solu17000-source/hospital-research-portal.git
 cd hospital-research-portal
-
-# 2. Install dependencies
 npm install
-
-# 3. Start development server
 npm run dev
-
-# 4. Open browser
-# http://localhost:3000
 ```
 
-### Demo Login Credentials
-| Username | Password | Role |
-|---|---|---|
-| `research-unit PMNH` | `PMNH@Research2024!` | Administrator |
-| `dr.fatima.director` | `demo` | Research Director |
-| `dr.khalid.surgery` | `demo` | Department Head |
-| `sara.coordinator` | `demo` | Research Coordinator |
+Open [http://localhost:3000](http://localhost:3000).
 
-**Public Visitor Portal:** Visit `http://localhost:3000/visitor` (no login required)
+### Initial accounts (demo)
+
+The two spec-required accounts are seeded and accept the initial password `ASas123456ASas`. Both have `login_count: 0`, so first sign-in is forced through the `/change-password` flow before the dashboard is reachable.
+
+| Role | Username | Initial password |
+|---|---|---|
+| **Super Admin** | `sultan.alallah` | `ASas123456ASas` |
+| **Admin** | `afnan.bakri` | `ASas123456ASas` |
+
+Anyone can also enter via **Continue as Visitor** on the login page — that sets a `pmnh-visitor` cookie that the middleware uses to gate every protected route.
 
 ---
 
-## Full Production Setup with Supabase
+## 2. Full setup — with a real Supabase project
 
-### 1. Create Supabase Project
-1. Go to [supabase.com](https://supabase.com)
-2. Create a new project
-3. Note your Project URL and API Keys
+### 2.1 Create the Supabase project
 
-### 2. Configure Environment Variables
+1. Sign in to [supabase.com](https://supabase.com) → **New Project**.
+2. Pick a strong DB password (store in your secrets manager — Supabase doesn't show it again).
+3. Choose the closest region (Frankfurt or Bahrain for Jazan).
+4. Wait for provisioning to finish, then go to **Project Settings → API** and note:
+   - Project URL → `NEXT_PUBLIC_SUPABASE_URL`
+   - `anon` public key → `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `service_role` key → `SUPABASE_SERVICE_ROLE_KEY` (server-only, never to the browser)
+
+### 2.2 Apply the schema
+
+```bash
+# In Supabase Dashboard → SQL Editor, paste the contents of:
+supabase/schema.sql
+```
+
+This creates: `departments`, `profiles`, `research_projects`, `qr_codes`, `notifications`, `reports`, `activity_logs`, `system_settings`, the JWT helper functions, and Row-Level Security policies on every sensitive table.
+
+### 2.3 Seed the two initial accounts
+
+1. **Auth → Users → Add user** in the Supabase dashboard, creating two users with the emails from the demo seeds:
+   - `admin@pmnh.gov.sa` (Sultan Alallah) — initial password `ASas123456ASas`
+   - `bkriafnan@gmail.com` (Afnan Bakri) — initial password `ASas123456ASas`
+2. Copy the UUID of each created user, then run in SQL Editor:
+
+```sql
+INSERT INTO profiles (id, username, full_name, email, role, is_active, email_verified, login_count)
+VALUES
+  ('<sultan-uuid>', 'sultan.alallah', 'Sultan Alallah', 'admin@pmnh.gov.sa',  'super_admin', true, true, 0),
+  ('<afnan-uuid>',  'afnan.bakri',    'Afnan Bakri',   'bkriafnan@gmail.com','admin',       true, true, 0);
+```
+
+`login_count = 0` triggers the forced-change-password flow on first sign-in. The `username` column has a `UNIQUE` constraint, so duplicates are blocked at the database level.
+
+### 2.4 Create the Storage bucket
+
+1. **Storage → New bucket** → name `research-files` → **Private**.
+2. Add an RLS policy so authenticated users can upload to their own folder:
+
+```sql
+CREATE POLICY "Users can upload to own folder" ON storage.objects
+FOR INSERT WITH CHECK (
+  bucket_id = 'research-files' AND
+  (storage.foldername(name))[1] = auth.uid()::text
+);
+```
+
+### 2.5 Wire `.env.local`
+
 ```bash
 cp .env.example .env.local
 ```
 
-Edit `.env.local`:
-```env
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your-anon-key
-SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
+Edit `.env.local` and set:
+
+```dotenv
+NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon-key>
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>   # server-only
 NEXT_PUBLIC_DEMO_MODE=false
+
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+NEXT_PUBLIC_APP_NAME="Health and Nursing Research Unit"
+NEXT_PUBLIC_HOSPITAL_NAME="Prince Mohammed Bin Nasser Hospital"
+NEXT_PUBLIC_HOSPITAL_LOCATION="Jazan, Kingdom of Saudi Arabia"
+
+NEXTAUTH_SECRET=<openssl rand -hex 32>
+JWT_SECRET=<openssl rand -hex 32>
 ```
 
-### 3. Setup Database Schema
-1. Open Supabase Dashboard → SQL Editor
-2. Copy and run the contents of `supabase/schema.sql`
-3. This creates all tables, indexes, RLS policies, and seeds departments
-
-### 4. Create Admin User
-1. Go to Supabase Dashboard → Authentication → Users
-2. Click "Add User" → Enter email, set password
-3. Copy the user's UUID
-4. Run in SQL Editor:
-```sql
-INSERT INTO profiles (id, username, full_name, email, role, is_active, email_verified)
-VALUES ('YOUR-USER-UUID', 'research-unit PMNH', 'Dr. Admin Name', 'admin@pmnh.gov.sa', 'admin', true, true);
-```
-
-### 5. Setup Storage Bucket
-1. Go to Supabase Dashboard → Storage
-2. Create bucket named `research-files`
-3. Set as private bucket
-4. Add RLS policies for authenticated users
-
-### 6. Run Seed Data (Optional)
-Run `supabase/seed-demo-data.sql` in SQL Editor for demo data.
+Restart `npm run dev` so Next picks up the new vars.
 
 ---
 
-## Application Structure
+## 3. Docker — production-style local run
 
-```
-hospital-research-portal/
-├── src/
-│   ├── app/
-│   │   ├── (auth)/          # Login, forgot password
-│   │   ├── (dashboard)/     # Protected app pages
-│   │   │   ├── dashboard/   # Executive dashboard
-│   │   │   ├── research/    # Research database
-│   │   │   ├── workflow/    # Kanban board
-│   │   │   ├── publications/
-│   │   │   ├── qr-codes/
-│   │   │   ├── departments/
-│   │   │   ├── users/
-│   │   │   ├── reports/
-│   │   │   ├── notifications/
-│   │   │   ├── ai-insights/
-│   │   │   ├── activity-logs/
-│   │   │   ├── storage/
-│   │   │   └── settings/
-│   │   └── visitor/         # Public portal (no login)
-│   ├── components/
-│   │   ├── layout/          # Sidebar, TopBar
-│   │   └── dashboard/       # StatCard, Charts
-│   ├── lib/
-│   │   ├── supabase.ts      # Supabase client
-│   │   ├── auth-store.ts    # Zustand auth state
-│   │   ├── demo-data.ts     # Demo/seed data
-│   │   └── utils.ts         # Utilities
-│   └── types/               # TypeScript types
-├── supabase/
-│   ├── schema.sql           # Database schema
-│   └── seed-demo-data.sql   # Demo data
-└── .env.example
-```
-
----
-
-## Pages & Features
-
-| Page | URL | Description |
-|---|---|---|
-| Login | `/login` | Secure portal login |
-| Forgot Password | `/forgot-password` | Email/SMS OTP recovery |
-| Dashboard | `/dashboard` | Executive analytics dashboard |
-| Research Database | `/research` | All research projects |
-| Add Research | `/research/new` | Multi-step research form |
-| Research Detail | `/research/[id]` | Full project view |
-| Workflow Board | `/workflow` | Kanban + timeline view |
-| Publications | `/publications` | Published papers analytics |
-| QR Codes | `/qr-codes` | Generate/scan QR codes |
-| Departments | `/departments` | Department management |
-| Users & Roles | `/users` | User management |
-| Reports | `/reports` | Generate & export reports |
-| Notifications | `/notifications` | Alert center |
-| AI Insights | `/ai-insights` | Smart analytics & predictions |
-| Activity Logs | `/activity-logs` | Full audit trail |
-| File Storage | `/storage` | Document management |
-| Settings | `/settings` | Profile, security, preferences |
-| Visitor Portal | `/visitor` | Public read-only portal |
-
----
-
-## Technology Stack
-
-| Layer | Technology |
-|---|---|
-| Frontend Framework | Next.js 14 (App Router) |
-| UI Library | React 18 |
-| Styling | Tailwind CSS 3 |
-| Animations | Framer Motion |
-| Charts | Recharts |
-| Icons | Lucide React |
-| QR Codes | react-qr-code |
-| Backend/Database | Supabase (PostgreSQL) |
-| Authentication | Supabase Auth |
-| State Management | Zustand |
-| Forms | React Hook Form + Zod |
-| File Storage | Supabase Storage |
-| Toast Notifications | React Hot Toast |
-
----
-
-## Security Features
-
-- ✅ Role-based access control (6 roles)
-- ✅ Encrypted passwords via Supabase Auth
-- ✅ Row Level Security (RLS) policies
-- ✅ Session management with auto-timeout
-- ✅ Failed login protection
-- ✅ Email verification support
-- ✅ SMS OTP support (requires Twilio)
-- ✅ Activity audit logs
-- ✅ Visitor mode restrictions
-- ✅ Confidential file access control
-
----
-
-## User Roles
-
-| Role | Permissions |
-|---|---|
-| **Admin** | Full system access, user management, settings |
-| **Research Director** | All research, reports, analytics |
-| **Department Head** | Department research, approvals, reports |
-| **Research Coordinator** | Add/update research, upload files, reports |
-| **Authorized Staff** | Submit research, view own projects |
-| **Viewer/Visitor** | Public research only (visitor portal) |
-
----
-
-## Production Deployment
-
-### Vercel (Recommended)
 ```bash
-npm install -g vercel
-vercel --prod
-```
-Add environment variables in Vercel dashboard.
+# Build + run
+docker compose up -d
 
-### Docker
-```dockerfile
-FROM node:20-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN npm ci --only=production
-COPY . .
-RUN npm run build
-EXPOSE 3000
-CMD ["npm", "start"]
+# Tail logs
+docker compose logs -f portal
+
+# Stop
+docker compose down
 ```
+
+The compose file:
+- Builds a multi-stage image with `node:20-alpine` (final image ≈ 180 MB).
+- Runs as a non-root user (`nextjs:1001`).
+- Reads `NEXT_PUBLIC_*` vars as build args (inlined into the bundle).
+- Reads server-only secrets (`SUPABASE_SERVICE_ROLE_KEY`, SMTP, Twilio, JWT) at runtime.
+- Mounts `/tmp` as tmpfs, drops all Linux capabilities, sets `no-new-privileges` — minimum attack surface.
+
+### Build args you can override
+
+```bash
+NEXT_PUBLIC_SUPABASE_URL=https://abc.supabase.co \
+NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJh... \
+NEXT_PUBLIC_DEMO_MODE=false \
+docker compose up -d --build
+```
+
+---
+
+## 4. CI / CD
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs on every push and PR:
+
+1. **verify** — `npm ci` → `tsc --noEmit` → `next lint --max-warnings 0` → `next build` (in demo mode, no Supabase needed).
+2. **docker** — builds the image and smoke-tests it inside the runner. Only runs on push-to-main or PRs that touched the Dockerfile.
+
+Builds cache via GHA cache so subsequent runs are 2–4× faster.
+
+### Going from CI to deploy
+
+The compose file is the unit of production deployment. Plug it into any host:
+
+| Host | How |
+|---|---|
+| **Vercel** | Use Vercel's native Next.js adapter — skip Docker entirely. Set env vars in Project Settings. |
+| **Self-hosted Ubuntu / RHEL** | `docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d`, behind nginx/Caddy with TLS termination + the CSP header. |
+| **Azure / AWS / GCP** | Push the image to ACR / ECR / GAR. Deploy to App Service / ECS / Cloud Run. Wire env vars from the platform's secrets store. |
+
+---
+
+## 5. Production checklist before go-live
+
+* [ ] `NEXT_PUBLIC_DEMO_MODE=false` in production
+* [ ] Supabase project created, schema applied, RLS verified
+* [ ] Both initial admin profiles seeded with `login_count = 0`
+* [ ] Storage bucket created with RLS policies
+* [ ] `NEXTAUTH_SECRET` and `JWT_SECRET` rotated to 32-byte random values
+* [ ] SMTP credentials set if you want password-reset emails to send
+* [ ] CSP set at the reverse proxy (Next.config skips it because dev mode requires `unsafe-inline`)
+* [ ] HTTPS / TLS terminated at the proxy — the HSTS header we emit assumes HTTPS only
+* [ ] Automated DB backups configured in Supabase
+* [ ] First-login forced password change tested with each initial account
+* [ ] Public/visitor portal verified read-only — try to deep-link `/dashboard` while in visitor mode (should bounce to `/visitor?blocked=1`)
 
 ---
 
 ## Support
 
-For technical issues or customizations:
-- Review the codebase structure above
-- Check `src/lib/demo-data.ts` for sample data structure
-- Refer to `supabase/schema.sql` for database structure
-
----
-
-*PMNH Jazan Research Portal — Enterprise Hospital Research Management System*
-*© 2026 Prince Mohammed Bin Nasser Hospital, Jazan, Saudi Arabia*
+For internal escalation, contact the Research Unit at `research@pmnh.gov.sa`. For platform-level issues, open a GitHub issue against `solu17000-source/hospital-research-portal`.

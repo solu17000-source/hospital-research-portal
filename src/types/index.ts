@@ -3,6 +3,7 @@
 // ============================================================
 
 export type UserRole =
+  | 'super_admin'
   | 'admin'
   | 'research_director'
   | 'department_head'
@@ -318,6 +319,7 @@ export const PRIORITY_COLORS: Record<PriorityLevel, string> = {
 }
 
 export const ROLE_LABELS: Record<UserRole, string> = {
+  super_admin: 'Super Admin',
   admin: 'Administrator',
   research_director: 'Research Director',
   department_head: 'Department Head',

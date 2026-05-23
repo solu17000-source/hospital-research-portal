@@ -25,20 +25,21 @@ export const DEMO_DEPARTMENTS: Department[] = [
 
 export const DEMO_USERS: Profile[] = [
   {
+    // Initial Super Admin per spec — must be created by the admin process.
+    // Username collision resolution: spec's Option A (auto-generate from name).
     id: 'u1',
-    username: 'research-unit PMNH',
+    username: 'sultan.alallah',
     full_name: 'Sultan Alallah',
     email: 'admin@pmnh.gov.sa',
     phone: '+966501283990',
-    role: 'admin',
+    role: 'super_admin',
     department_id: 'd14',
     is_active: true,
     email_verified: true,
     phone_verified: true,
-    login_count: 145,
+    login_count: 0,
     created_at: '2024-01-01',
     updated_at: '2024-06-01',
-    last_login: '2026-05-18T08:30:00Z',
   },
   {
     id: 'u2',
@@ -73,20 +74,21 @@ export const DEMO_USERS: Profile[] = [
     last_login: '2026-05-16T09:45:00Z',
   },
   {
+    // Initial Admin per spec — Option-A unique alias for the duplicate
+    // "Research Unit" username.
     id: 'u4',
     username: 'afnan.bakri',
     full_name: 'Afnan Bakri',
     email: 'bkriafnan@gmail.com',
     phone: '+966532856572',
-    role: 'research_coordinator',
+    role: 'admin',
     department_id: 'd6',
     is_active: true,
     email_verified: true,
     phone_verified: true,
-    login_count: 203,
+    login_count: 0,
     created_at: '2024-01-01',
     updated_at: '2024-06-01',
-    last_login: '2026-05-18T07:30:00Z',
   },
 ]
 

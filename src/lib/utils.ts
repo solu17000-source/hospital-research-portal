@@ -117,13 +117,21 @@ export function getInitials(name: string): string {
 }
 
 export function roleCanEdit(role: string): boolean {
-  return ['admin', 'research_director', 'department_head', 'research_coordinator', 'authorized_staff'].includes(role)
+  return ['super_admin', 'admin', 'research_director', 'department_head', 'research_coordinator', 'authorized_staff'].includes(role)
 }
 
 export function roleCanManageUsers(role: string): boolean {
-  return ['admin'].includes(role)
+  return ['super_admin', 'admin'].includes(role)
 }
 
 export function roleCanViewConfidential(role: string): boolean {
-  return ['admin', 'research_director', 'department_head', 'research_coordinator'].includes(role)
+  return ['super_admin', 'admin', 'research_director', 'department_head', 'research_coordinator'].includes(role)
+}
+
+export function isAdminRole(role: string): boolean {
+  return role === 'super_admin' || role === 'admin'
+}
+
+export function isSuperAdminRole(role: string): boolean {
+  return role === 'super_admin'
 }

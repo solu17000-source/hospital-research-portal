@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from 'next'
+import { cookies } from 'next/headers'
 import { Toaster } from 'react-hot-toast'
 import './globals.css'
 
@@ -28,8 +29,15 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
+  // Resolve the active interface language at render time from the `lang`
+  // cookie. Pages set this cookie on every language-toggle click, so the
+  // <html> attributes stay in sync with what the user actually sees —
+  // important for screen readers, RTL flow, and font selection.
+  const lang = cookies().get('lang')?.value === 'ar' ? 'ar' : 'en'
+  const dir = lang === 'ar' ? 'rtl' : 'ltr'
+
   return (
-    <html lang="en" dir="ltr">
+    <html lang={lang} dir={dir}>
       <body>
         {children}
         <Toaster

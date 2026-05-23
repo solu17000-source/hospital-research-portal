@@ -1,0 +1,39 @@
+# Keep the docker build context lean and reproducible.
+
+# Node / Next build outputs
+node_modules
+.next
+out
+build
+dist
+
+# Local environment — secrets must come from the deployment, not the image.
+.env
+.env.local
+.env.*.local
+
+# Editor / OS noise
+.git
+.gitignore
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.log
+
+# Tooling
+.github
+.claude
+*.md
+!SETUP.md
+!ENVIRONMENT.md
+
+# Tests (none yet, but reserved)
+coverage
+.nyc_output
+
+# Docker artifacts
+Dockerfile
+.dockerignore
+docker-compose.yml
+docker-compose.*.yml

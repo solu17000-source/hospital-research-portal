@@ -6,7 +6,7 @@ import { TopBar } from '@/components/layout/TopBar'
 import { useAuthStore } from '@/lib/auth-store'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
-  const { isAuthenticated, isLoading } = useAuthStore()
+  const { isAuthenticated, isLoading, mustChangePassword } = useAuthStore()
   const router = useRouter()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -17,10 +17,15 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   }, [])
 
   useEffect(() => {
-    if (mounted && !isLoading && !isAuthenticated) {
+    if (!mounted || isLoading) return
+    if (!isAuthenticated) {
       router.replace('/login')
+    } else if (mustChangePassword) {
+      // Authenticated but using a temporary password — force the change before
+      // exposing any dashboard module.
+      router.replace('/change-password')
     }
-  }, [mounted, isAuthenticated, isLoading, router])
+  }, [mounted, isAuthenticated, isLoading, mustChangePassword, router])
 
   if (!mounted || (!isAuthenticated && !isLoading)) {
     return (
