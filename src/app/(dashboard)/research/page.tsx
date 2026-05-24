@@ -11,6 +11,7 @@ import {
   Search, SlidersHorizontal, Users, X,
 } from 'lucide-react'
 
+import { useResearch } from '@/lib/data-source'
 import { DEMO_DEPARTMENTS, DEMO_RESEARCH } from '@/lib/demo-data'
 import { isDemoMode } from '@/lib/supabase'
 import {
@@ -35,6 +36,7 @@ const T = {
     title: 'Research Database',
     subtitle: 'All research projects across PMNH departments',
     addResearch: 'Add Research',
+    importExcel: 'Import Excel / CSV',
     export: 'Export',
     exportCsv: 'Export as CSV',
     exportXlsx: 'Export as Excel',
@@ -101,6 +103,7 @@ const T = {
     title: 'قاعدة بيانات الأبحاث',
     subtitle: 'جميع المشاريع البحثية في أقسام المستشفى',
     addResearch: 'إضافة بحث',
+    importExcel: 'استيراد Excel / CSV',
     export: 'تصدير',
     exportCsv: 'تصدير CSV',
     exportXlsx: 'تصدير Excel',
@@ -254,9 +257,14 @@ export default function ResearchPage() {
   const [exportMenu, setExportMenu] = useState(false)
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set())
 
+  // Live data via the data-source hook — merges Supabase rows with any
+  // user-created entries (demo mode) or the seed catalog (no Supabase).
+  const { data: researchData } = useResearch()
+  const researchList: ResearchProject[] = researchData ?? DEMO_RESEARCH
+
   // Filter pipeline --------------------------------------------
   const filtered = useMemo(() => {
-    let data: ResearchProject[] = DEMO_RESEARCH.filter(r => !archivedIds.has(r.id))
+    let data: ResearchProject[] = researchList.filter(r => !archivedIds.has(r.id))
 
     if (quickChip === 'active') data = data.filter(r => r.status === 'active')
     else if (quickChip === 'delayed') data = data.filter(r => r.status === 'delayed')
@@ -285,7 +293,7 @@ export default function ResearchPage() {
       return sortDir === 'asc' ? (av > bv ? 1 : -1) : (av < bv ? 1 : -1)
     })
     return sorted
-  }, [archivedIds, quickChip, search, statusFilter, deptFilter, stageFilter, priorityFilter, sortField, sortDir])
+  }, [researchList, archivedIds, quickChip, search, statusFilter, deptFilter, stageFilter, priorityFilter, sortField, sortDir])
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / perPage))
   const safePage = Math.min(page, totalPages)
@@ -295,14 +303,14 @@ export default function ResearchPage() {
   useEffect(() => { setPage(1) }, [search, quickChip, statusFilter, deptFilter, stageFilter, priorityFilter, perPage])
 
   const summaryStats = useMemo(() => {
-    const visible = DEMO_RESEARCH.filter(r => !archivedIds.has(r.id))
+    const visible = researchList.filter(r => !archivedIds.has(r.id))
     return [
       { key: t.summaryTotal,     value: visible.length, color: 'blue',   icon: FlaskConical },
       { key: t.summaryActive,    value: visible.filter(r => r.status === 'active').length, color: 'green',  icon: CheckCircle },
       { key: t.summaryDelayed,   value: visible.filter(r => r.status === 'delayed').length, color: 'orange', icon: AlertTriangle },
       { key: t.summaryPublished, value: visible.filter(r => r.publication_status === 'published').length, color: 'purple', icon: BookOpen },
     ]
-  }, [archivedIds, t])
+  }, [researchList, archivedIds, t])
 
   const activeFilterCount =
     (search ? 1 : 0) +
@@ -457,6 +465,10 @@ export default function ResearchPage() {
               </div>
             )}
           </div>
+          <Link href="/research/import" className="btn-secondary text-sm">
+            <FileSpreadsheet className="w-4 h-4" />
+            {t.importExcel}
+          </Link>
           <Link href="/research/new" className="btn-primary text-sm">
             <Plus className="w-4 h-4" />
             {t.addResearch}

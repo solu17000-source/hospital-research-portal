@@ -9,8 +9,13 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import toast from 'react-hot-toast'
+import { createResearch, type ResearchInput } from '@/lib/data-source'
 import { DEMO_DEPARTMENTS, DEMO_USERS } from '@/lib/demo-data'
-import { RESEARCH_CATEGORIES, WORKFLOW_STAGES } from '@/types'
+import { isDemoMode } from '@/lib/supabase'
+import { useAuthStore } from '@/lib/auth-store'
+import { RESEARCH_CATEGORIES, WORKFLOW_STAGES, type ApprovalStatus,
+  type JournalQuartile, type IndexedDatabase, type PriorityLevel,
+  type WorkflowStage } from '@/types'
 
 const STEPS = [
   { id: 1, label: 'Basic Info', icon: FlaskConical },
@@ -25,6 +30,7 @@ const STEPS = [
 
 export default function NewResearchPage() {
   const router = useRouter()
+  const { user } = useAuthStore()
   const [step, setStep] = useState(1)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
@@ -58,13 +64,54 @@ export default function NewResearchPage() {
   const set = (key: string, value: unknown) => setForm(f => ({ ...f, [key]: value }))
 
   const handleSave = async () => {
-    if (!form.title) { toast.error('Research title is required'); return }
+    if (!form.title.trim()) { toast.error('Research title is required'); return }
     if (!form.department_id) { toast.error('Department is required'); return }
+
     setSaving(true)
-    await new Promise(r => setTimeout(r, 1200))
+    // Shape the wizard's flat form state into the typed write input.
+    const payload: ResearchInput = {
+      title: form.title.trim(),
+      title_ar: form.title_ar.trim() || undefined,
+      abstract: form.abstract.trim() || undefined,
+      // Free-text "keyword, keyword, keyword" → string[] for the schema.
+      keywords: form.keywords
+        ? form.keywords.split(/[,،]/).map(k => k.trim()).filter(Boolean)
+        : undefined,
+      research_category: form.research_category || undefined,
+      department_id: form.department_id,
+      principal_investigator_name: form.principal_investigator_name.trim() || undefined,
+      start_date: form.start_date || undefined,
+      expected_completion_date: form.expected_completion_date || undefined,
+      workflow_stage: form.workflow_stage as WorkflowStage,
+      priority_level: form.priority_level as PriorityLevel,
+      irb_approval_status: form.irb_approval_status as ApprovalStatus,
+      irb_approval_number: form.irb_approval_number.trim() || undefined,
+      department_approval_status: form.department_approval_status as ApprovalStatus,
+      ethics_approval_status: form.ethics_approval_status as ApprovalStatus,
+      funding_source: form.funding_source.trim() || undefined,
+      budget: form.budget ? Number(form.budget) || undefined : undefined,
+      budget_currency: form.budget_currency,
+      journal_name: form.journal_name.trim() || undefined,
+      journal_quartile: form.journal_quartile as JournalQuartile,
+      indexed_database: form.indexed_database as IndexedDatabase,
+      is_open_access: !!form.is_open_access,
+      is_public: !!form.is_public,
+      notes: form.notes.trim() || undefined,
+      created_by: user?.id,
+    }
+
+    const result = await createResearch(payload)
     setSaving(false)
-    toast.success('Research project created successfully! Redirecting...')
-    setTimeout(() => router.push('/research'), 1500)
+
+    if (!result.ok) {
+      toast.error(result.error || 'Could not save research project')
+      return
+    }
+
+    const mode = isDemoMode ? 'saved locally' : 'saved to database'
+    toast.success(`${result.row.research_id} created — ${mode}. Redirecting…`)
+    // Small delay so the user sees the toast before the route swap.
+    setTimeout(() => router.push(`/research/${result.row.id}`), 900)
   }
 
   const progress = ((step - 1) / (STEPS.length - 1)) * 100

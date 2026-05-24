@@ -43,6 +43,45 @@ import type {
 } from '@/types'
 
 // ============================================================
+// Local persistence (demo mode only)
+//
+// User-created research rows are kept in localStorage so they survive
+// reloads and immediately appear in the dashboard, /research list and
+// stats. When Supabase is wired, this layer falls silent — rows live
+// in the `research_projects` table and RLS gates access.
+// ============================================================
+
+const LOCAL_RESEARCH_KEY = 'pmnh-research-local-v1'
+
+function loadLocalResearch(): ResearchProject[] {
+  if (typeof window === 'undefined') return []
+  try {
+    const raw = localStorage.getItem(LOCAL_RESEARCH_KEY)
+    return raw ? (JSON.parse(raw) as ResearchProject[]) : []
+  } catch { return [] }
+}
+function saveLocalResearch(list: ResearchProject[]) {
+  if (typeof window === 'undefined') return
+  try { localStorage.setItem(LOCAL_RESEARCH_KEY, JSON.stringify(list)) } catch {/* quota */}
+}
+
+/** Sequence number for demo-mode research IDs — kept separately so we don't
+ *  collide with the seeded PMNH-2024-0001..N range. */
+function nextDemoResearchId(): string {
+  const year = new Date().getFullYear()
+  const existing = loadLocalResearch()
+  const usedNums = new Set(
+    [...DEMO_RESEARCH, ...existing]
+      .map(r => r.research_id.match(/PMNH-\d{4}-(\d+)/)?.[1])
+      .filter(Boolean)
+      .map(s => parseInt(s as string, 10)),
+  )
+  let n = 5000 // start above the seed range
+  while (usedNums.has(n)) n++
+  return `PMNH-${year}-${String(n).padStart(4, '0')}`
+}
+
+// ============================================================
 // Fetch primitives — async, isomorphic, always return *something*.
 // Every loader falls back to demo data when Supabase isn't configured
 // or returns an error so the dashboard never shows a blank screen.
@@ -69,10 +108,15 @@ export type ResearchQuery = {
   publicOnly?: boolean
   limit?: number
 }
+/** In demo mode the local-storage rows are merged in *first* so the most
+ *  recently created project sorts to the top of the dashboard / list. */
+function demoResearchMerged(): ResearchProject[] {
+  return [...loadLocalResearch(), ...DEMO_RESEARCH]
+}
 export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchProject[]> {
-  if (isDemoMode) return applyResearchFilters(DEMO_RESEARCH, opts)
+  if (isDemoMode) return applyResearchFilters(demoResearchMerged(), opts)
   const supabase = createClient()
-  if (!supabase) return applyResearchFilters(DEMO_RESEARCH, opts)
+  if (!supabase) return applyResearchFilters(demoResearchMerged(), opts)
   try {
     let q = supabase
       .from('research_projects')
@@ -84,9 +128,9 @@ export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchP
     if (opts.publicOnly)   q = q.eq('is_public', true)
     if (opts.limit)        q = q.limit(opts.limit)
     const { data, error } = await q
-    if (error || !data) return applyResearchFilters(DEMO_RESEARCH, opts)
+    if (error || !data) return applyResearchFilters(demoResearchMerged(), opts)
     return data as ResearchProject[]
-  } catch { return applyResearchFilters(DEMO_RESEARCH, opts) }
+  } catch { return applyResearchFilters(demoResearchMerged(), opts) }
 }
 function applyResearchFilters(list: ResearchProject[], opts: ResearchQuery): ResearchProject[] {
   let out = list.slice()
@@ -162,7 +206,29 @@ export async function fetchAiInsights(): Promise<AIInsight[]> {
  * demo equivalent so the dashboard renders fully populated.
  */
 export async function fetchStats(): Promise<DashboardStats> {
-  if (isDemoMode) return DEMO_STATS
+  if (isDemoMode) {
+    // Recompute counts from the merged list so user-created rows show up
+    // in the dashboard KPI strip immediately after creation.
+    const all = demoResearchMerged()
+    const by = (pred: (r: ResearchProject) => boolean) => all.filter(pred).length
+    const localCount = loadLocalResearch().length
+    return {
+      ...DEMO_STATS,
+      total_projects:      all.length,
+      active_projects:     by(r => r.status === 'active'),
+      completed_projects:  by(r => r.status === 'completed'),
+      delayed_projects:    by(r => r.status === 'delayed'),
+      published_papers:    by(r => r.publication_status === 'published'),
+      pending_irb:         by(r => r.irb_approval_status === 'pending'),
+      q1_publications:     by(r => r.journal_quartile === 'Q1'),
+      q2_publications:     by(r => r.journal_quartile === 'Q2'),
+      q3_publications:     by(r => r.journal_quartile === 'Q3'),
+      q4_publications:     by(r => r.journal_quartile === 'Q4'),
+      open_access_count:   by(r => !!r.is_open_access),
+      this_month_new:      DEMO_STATS.this_month_new + localCount,
+      funded_projects:     by(r => !!r.funding_source),
+    }
+  }
   const supabase = createClient()
   if (!supabase) return DEMO_STATS
   try {
@@ -223,6 +289,205 @@ async function countWhere(
   }
   const { count } = await q
   return count ?? null
+}
+
+// ============================================================
+// Writes (research)
+// ============================================================
+
+/** What callers hand us — the schema fields they're allowed to set.
+ *  `research_id`, timestamps, `is_archived` and audit fields are derived. */
+export type ResearchInput = Partial<Omit<ResearchProject,
+  'id' | 'research_id' | 'created_at' | 'updated_at' | 'is_archived' | 'citation_count'
+>> & { title: string }
+
+export type CreateResult<T> = { ok: true; row: T } | { ok: false; error: string }
+export type BulkResult = {
+  ok: number
+  failed: number
+  rows: ResearchProject[]
+  errors: { row: number; error: string; title?: string }[]
+}
+
+/** Hydrate a `ResearchInput` into a fully-populated `ResearchProject` row,
+ *  filling enum defaults that the database has but the client may have
+ *  omitted. Used by both the single create + the bulk path. */
+function buildResearchRow(input: ResearchInput): ResearchProject {
+  const now = new Date().toISOString()
+  return {
+    id: `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    research_id: nextDemoResearchId(),
+    title: input.title.trim(),
+    title_ar: input.title_ar,
+    abstract: input.abstract,
+    keywords: input.keywords,
+    research_category: input.research_category,
+    department_id: input.department_id,
+    principal_investigator_id: input.principal_investigator_id,
+    principal_investigator_name: input.principal_investigator_name,
+    start_date: input.start_date,
+    expected_completion_date: input.expected_completion_date,
+    actual_completion_date: input.actual_completion_date,
+    status: input.status ?? 'active',
+    workflow_stage: input.workflow_stage ?? 'idea_submitted',
+    priority_level: input.priority_level ?? 'medium',
+    completion_percentage: input.completion_percentage ?? 0,
+    irb_approval_status: input.irb_approval_status ?? 'pending',
+    irb_approval_date: input.irb_approval_date,
+    irb_approval_number: input.irb_approval_number,
+    department_approval_status: input.department_approval_status ?? 'pending',
+    department_approval_date: input.department_approval_date,
+    ethics_approval_status: input.ethics_approval_status ?? 'pending',
+    ethics_approval_date: input.ethics_approval_date,
+    funding_source: input.funding_source,
+    budget: input.budget,
+    budget_currency: input.budget_currency ?? 'SAR',
+    publication_status: input.publication_status ?? 'not_submitted',
+    journal_name: input.journal_name,
+    journal_submission_date: input.journal_submission_date,
+    journal_acceptance_date: input.journal_acceptance_date,
+    publication_date: input.publication_date,
+    doi: input.doi,
+    publication_link: input.publication_link,
+    impact_factor: input.impact_factor,
+    citation_count: 0,
+    journal_quartile: input.journal_quartile ?? 'not_indexed',
+    indexed_database: input.indexed_database ?? 'not_indexed',
+    is_open_access: input.is_open_access ?? false,
+    publication_type: input.publication_type,
+    notes: input.notes,
+    is_public: input.is_public ?? false,
+    is_archived: false,
+    created_by: input.created_by,
+    updated_by: input.updated_by,
+    created_at: now,
+    updated_at: now,
+  }
+}
+
+/** Server input shape — strips client-only synthetic fields when we hand
+ *  the payload to Supabase. The DB trigger fills `research_id` itself. */
+function toServerPayload(input: ResearchInput) {
+  return {
+    title: input.title.trim(),
+    title_ar: input.title_ar || null,
+    abstract: input.abstract || null,
+    keywords: input.keywords ?? null,
+    research_category: input.research_category || null,
+    department_id: input.department_id || null,
+    principal_investigator_id: input.principal_investigator_id || null,
+    principal_investigator_name: input.principal_investigator_name || null,
+    start_date: input.start_date || null,
+    expected_completion_date: input.expected_completion_date || null,
+    status: input.status ?? 'active',
+    workflow_stage: input.workflow_stage ?? 'idea_submitted',
+    priority_level: input.priority_level ?? 'medium',
+    completion_percentage: input.completion_percentage ?? 0,
+    irb_approval_status: input.irb_approval_status ?? 'pending',
+    irb_approval_number: input.irb_approval_number || null,
+    department_approval_status: input.department_approval_status ?? 'pending',
+    ethics_approval_status: input.ethics_approval_status ?? 'pending',
+    funding_source: input.funding_source || null,
+    budget: input.budget ?? null,
+    budget_currency: input.budget_currency ?? 'SAR',
+    publication_status: input.publication_status ?? 'not_submitted',
+    journal_name: input.journal_name || null,
+    publication_date: input.publication_date || null,
+    doi: input.doi || null,
+    journal_quartile: input.journal_quartile ?? 'not_indexed',
+    indexed_database: input.indexed_database ?? 'not_indexed',
+    is_open_access: input.is_open_access ?? false,
+    notes: input.notes || null,
+    is_public: input.is_public ?? false,
+    created_by: input.created_by || null,
+  }
+}
+
+export async function createResearch(input: ResearchInput): Promise<CreateResult<ResearchProject>> {
+  if (!input.title || !input.title.trim()) {
+    return { ok: false, error: 'Title is required.' }
+  }
+
+  // -------- Supabase path --------
+  if (!isDemoMode) {
+    const supabase = createClient()
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('research_projects')
+          .insert(toServerPayload(input))
+          .select('*')
+          .single()
+        if (error || !data) return { ok: false, error: error?.message || 'Insert failed' }
+        return { ok: true, row: data as ResearchProject }
+      } catch (e) {
+        return { ok: false, error: (e as Error).message || 'Network error' }
+      }
+    }
+  }
+
+  // -------- Demo / localStorage path --------
+  const row = buildResearchRow(input)
+  const existing = loadLocalResearch()
+  saveLocalResearch([row, ...existing])
+  return { ok: true, row }
+}
+
+export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkResult> {
+  const result: BulkResult = { ok: 0, failed: 0, rows: [], errors: [] }
+
+  // -------- Supabase path: one batched insert --------
+  if (!isDemoMode) {
+    const supabase = createClient()
+    if (supabase) {
+      try {
+        const valid = inputs.filter(i => i.title && i.title.trim())
+        const skipped = inputs.length - valid.length
+        for (let i = 0; i < inputs.length; i++) {
+          if (!inputs[i].title?.trim()) {
+            result.failed++
+            result.errors.push({ row: i + 2, error: 'Missing title', title: inputs[i].title })
+          }
+        }
+        if (valid.length === 0) return result
+        const { data, error } = await supabase
+          .from('research_projects')
+          .insert(valid.map(toServerPayload))
+          .select('*')
+        if (error) {
+          result.failed += valid.length
+          result.errors.push({ row: 0, error: error.message })
+          return result
+        }
+        result.ok = (data?.length ?? 0)
+        result.rows = (data ?? []) as ResearchProject[]
+        result.failed += skipped
+        return result
+      } catch (e) {
+        result.failed = inputs.length
+        result.errors.push({ row: 0, error: (e as Error).message || 'Network error' })
+        return result
+      }
+    }
+  }
+
+  // -------- Demo path: append each in turn --------
+  const builtRows: ResearchProject[] = []
+  inputs.forEach((input, idx) => {
+    if (!input.title?.trim()) {
+      result.failed++
+      result.errors.push({ row: idx + 2, error: 'Missing title', title: input.title })
+      return
+    }
+    builtRows.push(buildResearchRow(input))
+    result.ok++
+  })
+  if (builtRows.length) {
+    const existing = loadLocalResearch()
+    saveLocalResearch([...builtRows, ...existing])
+    result.rows = builtRows
+  }
+  return result
 }
 
 // ============================================================
