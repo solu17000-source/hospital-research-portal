@@ -9,7 +9,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import toast from 'react-hot-toast'
-import { createResearch, type ResearchInput } from '@/lib/data-source'
+import { createResearch, useDepartments, type ResearchInput } from '@/lib/data-source'
 import { DEMO_DEPARTMENTS, DEMO_USERS } from '@/lib/demo-data'
 import { isDemoMode } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
@@ -31,6 +31,12 @@ const STEPS = [
 export default function NewResearchPage() {
   const router = useRouter()
   const { user } = useAuthStore()
+  // Live department list — real Supabase UUIDs when configured, demo seed
+  // otherwise. Critical: without this the dropdown emits short demo ids
+  // like "d4" that the Supabase `uuid` column rejects.
+  const { data: deptData } = useDepartments()
+  const departments = deptData ?? DEMO_DEPARTMENTS
+
   const [step, setStep] = useState(1)
   const [saving, setSaving] = useState(false)
   const [form, setForm] = useState({
@@ -247,7 +253,7 @@ export default function NewResearchPage() {
                 <select value={form.department_id} onChange={e => set('department_id', e.target.value)}
                   className="form-input">
                   <option value="">Select the research department</option>
-                  {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </div>
               <div>
@@ -444,7 +450,7 @@ export default function NewResearchPage() {
                   { label: 'Title', value: form.title || '—' },
                   { label: 'Category', value: form.research_category || '—' },
                   { label: 'Principal Investigator', value: form.principal_investigator_name || '—' },
-                  { label: 'Department', value: DEMO_DEPARTMENTS.find(d => d.id === form.department_id)?.name || '—' },
+                  { label: 'Department', value: departments.find(d => d.id === form.department_id)?.name || '—' },
                   { label: 'Priority', value: form.priority_level },
                   { label: 'Workflow Stage', value: WORKFLOW_STAGES[form.workflow_stage as keyof typeof WORKFLOW_STAGES]?.label || '—' },
                   { label: 'Start Date', value: form.start_date || '—' },

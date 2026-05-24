@@ -10,8 +10,9 @@ import {
   FileSpreadsheet, Languages, RefreshCw, Sparkles, X,
 } from 'lucide-react'
 
-import { createResearchBulk, type ResearchInput, type BulkResult } from '@/lib/data-source'
+import { createResearchBulk, useDepartments, type ResearchInput, type BulkResult } from '@/lib/data-source'
 import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import type { Department } from '@/types'
 import { useLang } from '@/lib/i18n'
 import { isDemoMode } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
@@ -159,10 +160,13 @@ const PUBLICATION_VALUES = [
 ] as const
 const QUARTILE_VALUES = ['Q1', 'Q2', 'Q3', 'Q4', 'not_indexed'] as const
 
-function resolveDepartmentId(label: string): string | undefined {
+/** Department resolver that looks up against the *live* departments list
+ *  passed in by the caller — critical so the importer emits real Supabase
+ *  UUIDs instead of demo short ids like "d4". */
+function resolveDepartmentId(label: string, departments: Department[]): string | undefined {
   const s = label.trim().toLowerCase()
   if (!s) return undefined
-  const hit = DEMO_DEPARTMENTS.find(d =>
+  const hit = departments.find(d =>
     d.name.toLowerCase() === s
     || d.code.toLowerCase() === s
     || s.includes(d.code.toLowerCase())
@@ -184,10 +188,19 @@ type ParsedRow = {
   warnings: string[]
 }
 
-function projectRow(raw: RawRow, mapping: Record<string, Field>, rowIndex: number, userId?: string): ParsedRow {
+function projectRow(
+  raw: RawRow,
+  mapping: Record<string, Field>,
+  rowIndex: number,
+  departments: Department[],
+  userId?: string,
+): ParsedRow {
   const input: ResearchInput = { title: '' }
   const errors: string[] = []
   const warnings: string[] = []
+  // `created_by` is intentionally only set when the caller has a real
+  // Supabase user UUID — otherwise the server payload's UUID guard will
+  // null it out anyway, and we save a hop.
   input.created_by = userId
 
   for (const [header, field] of Object.entries(mapping)) {
@@ -201,7 +214,7 @@ function projectRow(raw: RawRow, mapping: Record<string, Field>, rowIndex: numbe
       case 'keywords':             input.keywords = String(value).split(/[,،;|]/).map(k => k.trim()).filter(Boolean); break
       case 'research_category':    input.research_category = String(value).trim(); break
       case 'department': {
-        const id = resolveDepartmentId(String(value))
+        const id = resolveDepartmentId(String(value), departments)
         if (id) input.department_id = id
         else warnings.push(`Unknown department "${value}" — left unset.`)
         break
@@ -320,6 +333,10 @@ export default function ImportResearchPage() {
   const router = useRouter()
   const { user } = useAuthStore()
   const { lang, isRtl, toggle, t } = useLang(DICT)
+  // Live departments — so a "Department" cell that reads "Nursing" resolves
+  // to the real Supabase UUID, not the demo short id.
+  const { data: deptData } = useDepartments()
+  const departments = deptData ?? DEMO_DEPARTMENTS
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -336,8 +353,8 @@ export default function ImportResearchPage() {
 
   const parsedRows = useMemo<ParsedRow[]>(() => {
     if (!rawRows.length || !headers.length) return []
-    return rawRows.map((raw, i) => projectRow(raw, mapping, i + 2, user?.id))
-  }, [rawRows, headers, mapping, user?.id])
+    return rawRows.map((raw, i) => projectRow(raw, mapping, i + 2, departments, user?.id))
+  }, [rawRows, headers, mapping, departments, user?.id])
 
   const errorCount = parsedRows.filter(r => r.errors.length).length
   const okCount = parsedRows.length - errorCount
@@ -595,7 +612,7 @@ export default function ImportResearchPage() {
                       </td>
                       <td className="text-xs text-gray-600">
                         {r.input.department_id
-                          ? DEMO_DEPARTMENTS.find(d => d.id === r.input.department_id)?.name
+                          ? departments.find(d => d.id === r.input.department_id)?.name
                           : <span className="text-gray-400">—</span>}
                       </td>
                       <td>

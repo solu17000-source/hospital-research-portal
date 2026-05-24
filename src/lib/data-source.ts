@@ -365,8 +365,21 @@ function buildResearchRow(input: ResearchInput): ResearchProject {
   }
 }
 
+/** Postgres `uuid` columns reject anything that isn't a 128-bit hex
+ *  formatted as 8-4-4-4-12. Demo data uses short ids like "d1"/"u4" — if
+ *  those leak into a real Supabase insert we have to coerce them to null
+ *  or the entire row gets rejected. Schema lets every UUID column on
+ *  research_projects be null. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function uuidOrNull(v?: string | null): string | null {
+  if (!v) return null
+  return UUID_RE.test(v.trim()) ? v.trim() : null
+}
+
 /** Server input shape — strips client-only synthetic fields when we hand
- *  the payload to Supabase. The DB trigger fills `research_id` itself. */
+ *  the payload to Supabase. The DB trigger fills `research_id` itself.
+ *  All `uuid`-typed columns go through `uuidOrNull` so demo-mode short
+ *  ids never reach the database. */
 function toServerPayload(input: ResearchInput) {
   return {
     title: input.title.trim(),
@@ -374,8 +387,8 @@ function toServerPayload(input: ResearchInput) {
     abstract: input.abstract || null,
     keywords: input.keywords ?? null,
     research_category: input.research_category || null,
-    department_id: input.department_id || null,
-    principal_investigator_id: input.principal_investigator_id || null,
+    department_id: uuidOrNull(input.department_id),
+    principal_investigator_id: uuidOrNull(input.principal_investigator_id),
     principal_investigator_name: input.principal_investigator_name || null,
     start_date: input.start_date || null,
     expected_completion_date: input.expected_completion_date || null,
@@ -399,7 +412,7 @@ function toServerPayload(input: ResearchInput) {
     is_open_access: input.is_open_access ?? false,
     notes: input.notes || null,
     is_public: input.is_public ?? false,
-    created_by: input.created_by || null,
+    created_by: uuidOrNull(input.created_by),
   }
 }
 
