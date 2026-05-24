@@ -1,4 +1,5 @@
 'use client'
+import { useEffect } from 'react'
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Profile } from '@/types'
@@ -117,40 +118,87 @@ export const useAuthStore = create<AuthState>()(
             return { success: false, error: 'Authentication service unavailable.', errorCode: 'network' }
           }
 
-          // Allow login by username OR email. Resolve username → email via the
-          // public profiles row (RLS must permit unauthenticated reads of the
-          // `email` column scoped to active rows for this to work).
+          // Allow login by username OR email. Resolve username → email by
+          // calling a SECURITY DEFINER RPC (`lookup_email_by_username`) which
+          // bypasses RLS for this single safe read. See 002_auth_helpers.sql.
           let email = ident
           if (!ident.includes('@')) {
-            const { data: profileRow } = await supabase
-              .from('profiles')
-              .select('email')
-              .eq('username', ident)
-              .eq('is_active', true)
-              .maybeSingle()
-            if (!profileRow?.email) {
+            const { data: emailRow, error: lookupErr } = await supabase
+              .rpc('lookup_email_by_username', { p_username: ident })
+            if (lookupErr) {
+              set({ isLoading: false })
+              return {
+                success: false,
+                // Make the migration-missing case obvious in the toast.
+                error: lookupErr.message.includes('function') || lookupErr.message.includes('not exist')
+                  ? 'Database not migrated — apply supabase/migrations/002_auth_helpers.sql then retry.'
+                  : `Lookup failed: ${lookupErr.message}`,
+                errorCode: 'unknown',
+              }
+            }
+            if (!emailRow) {
               set({ isLoading: false })
               return { success: false, error: 'Invalid username or password.', errorCode: 'invalid_credentials' }
             }
-            email = profileRow.email
+            email = String(emailRow)
           }
 
           const { data, error } = await supabase.auth.signInWithPassword({ email, password })
           if (error || !data.user) {
             set({ isLoading: false })
-            return { success: false, error: error?.message || 'Invalid username or password.', errorCode: 'invalid_credentials' }
+            return {
+              success: false,
+              error: error?.message || 'Invalid username or password.',
+              errorCode: 'invalid_credentials',
+            }
           }
 
-          const { data: profile, error: profileErr } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', data.user.id)
-            .maybeSingle()
+          // Fetch the profile row.
+          let profile: Profile | null = null
+          {
+            const { data: row, error: profileErr } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', data.user.id)
+              .maybeSingle()
+            if (profileErr) {
+              await supabase.auth.signOut()
+              set({ isLoading: false })
+              return { success: false, error: `Profile read failed: ${profileErr.message}`, errorCode: 'unknown' }
+            }
+            profile = row as Profile | null
+          }
 
-          if (profileErr || !profile) {
-            await supabase.auth.signOut()
-            set({ isLoading: false })
-            return { success: false, error: 'Profile not found.', errorCode: 'unknown' }
+          // Safety net: the on_auth_user_created trigger should have created
+          // the row, but if the migration wasn't applied OR an earlier auth
+          // user predates the trigger, create the profile inline now so the
+          // user isn't trapped at the login screen.
+          if (!profile) {
+            const username = data.user.email?.split('@')[0] || data.user.id.slice(0, 8)
+            const { data: created, error: createErr } = await supabase
+              .from('profiles')
+              .insert({
+                id: data.user.id,
+                email: data.user.email,
+                username,
+                full_name: data.user.user_metadata?.full_name || username,
+                role: 'authorized_staff',
+                is_active: true,
+                email_verified: !!data.user.email_confirmed_at,
+                login_count: 0,
+              })
+              .select('*')
+              .single()
+            if (createErr || !created) {
+              await supabase.auth.signOut()
+              set({ isLoading: false })
+              return {
+                success: false,
+                error: `Could not bootstrap profile: ${createErr?.message ?? 'unknown'}. Apply 002_auth_helpers.sql.`,
+                errorCode: 'unknown',
+              }
+            }
+            profile = created as Profile
           }
 
           if (!profile.is_active) {
@@ -179,13 +227,13 @@ export const useAuthStore = create<AuthState>()(
             .then(() => undefined)
 
           set({
-            user: profile as Profile,
+            user: profile,
             isAuthenticated: true,
             isLoading: false,
             mustChangePassword: mustChange,
             lastIdentifier: opts?.remember ? ident : null,
           })
-          return { success: true, mustChangePassword: mustChange, user: profile as Profile }
+          return { success: true, mustChangePassword: mustChange, user: profile }
         } catch {
           set({ isLoading: false })
           return { success: false, error: 'Network error. Please try again.', errorCode: 'network' }
@@ -242,3 +290,51 @@ export const useAuthStore = create<AuthState>()(
     },
   ),
 )
+
+/**
+ * Run-once-per-app hook that:
+ *   1. Calls `hydrate()` so a refreshed page validates its persisted Zustand
+ *      state against the actual Supabase session (kicks the user out if the
+ *      JWT was revoked or expired).
+ *   2. Subscribes to `auth.onAuthStateChange` so a sign-out from another tab,
+ *      a silent token refresh, or a session expiry all keep the store in sync.
+ *
+ * Call from a layout-level Client Component so it mounts once per session.
+ */
+export function useAuthHydrate(): void {
+  useEffect(() => {
+    void useAuthStore.getState().hydrate()
+    if (isDemoMode) return
+
+    const supabase = createClient()
+    if (!supabase) return
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (event === 'SIGNED_OUT' || !session?.user) {
+          useAuthStore.setState({
+            user: null,
+            isAuthenticated: false,
+            mustChangePassword: false,
+          })
+          return
+        }
+        if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'SIGNED_IN') {
+          // Re-fetch the profile so role / status changes elsewhere flow in.
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', session.user.id)
+            .maybeSingle()
+          if (profile) {
+            useAuthStore.setState({
+              user: profile as Profile,
+              isAuthenticated: true,
+            })
+          }
+        }
+      },
+    )
+    return () => subscription.unsubscribe()
+  }, [])
+}

@@ -46,28 +46,62 @@ Anyone can also enter via **Continue as Visitor** on the login page — that set
 
 ### 2.2 Apply the schema
 
-```bash
-# In Supabase Dashboard → SQL Editor, paste the contents of:
-supabase/schema.sql
-```
+Apply these two files **in order** via Supabase Dashboard → SQL Editor:
 
-This creates: `departments`, `profiles`, `research_projects`, `qr_codes`, `notifications`, `reports`, `activity_logs`, `system_settings`, the JWT helper functions, and Row-Level Security policies on every sensitive table.
+1. `supabase/schema.sql` — base tables, enums, indexes, sequences.
+2. `supabase/migrations/002_auth_helpers.sql` — auth glue (see below).
+
+The first file creates: `departments`, `profiles`, `research_projects`, `qr_codes`, `notifications`, `reports`, `activity_logs`, `system_settings`, the JWT helper functions, and Row-Level Security policies on every sensitive table.
+
+The migration adds **the four things that make sign-in actually work** with the in-app login form:
+
+- `lookup_email_by_username(username)` — `SECURITY DEFINER` RPC the auth-store calls before `signInWithPassword` so anonymous clients can resolve a username to its email (RLS otherwise blocks anon reads of the profiles table).
+- `is_admin(user_id)` — `SECURITY DEFINER` helper used in the RLS policies for admin reads/updates so they don't recurse on themselves.
+- `on_auth_user_created` trigger — auto-creates a `profiles` row whenever you add a user via **Auth → Users**, so step 2.3 below becomes optional (only needed to overwrite the auto-generated defaults).
+- Backfill — every existing `auth.users` row without a profile gets one automatically.
+
+Without the migration the auth-store will surface this exact error:
+
+> Database not migrated — apply supabase/migrations/002_auth_helpers.sql then retry.
 
 ### 2.3 Seed the two initial accounts
 
-1. **Auth → Users → Add user** in the Supabase dashboard, creating two users with the emails from the demo seeds:
+1. **Auth → Users → Add user** in the Supabase dashboard. The trigger from step 2.2 auto-creates a matching `profiles` row each time with a default role of `authorized_staff` and `login_count = 0` (which forces password change on first sign-in).
    - `admin@pmnh.gov.sa` (Sultan Alallah) — initial password `ASas123456ASas`
    - `bkriafnan@gmail.com` (Afnan Bakri) — initial password `ASas123456ASas`
-2. Copy the UUID of each created user, then run in SQL Editor:
+
+   The trigger derives the username from the local-part of the email (`admin`, `bkriafnan`). To match the spec's `sultan.alallah` / `afnan.bakri`, do the small UPDATE below.
+
+2. Promote the roles + rename the usernames to match the spec:
 
 ```sql
-INSERT INTO profiles (id, username, full_name, email, role, is_active, email_verified, login_count)
-VALUES
-  ('<sultan-uuid>', 'sultan.alallah', 'Sultan Alallah', 'admin@pmnh.gov.sa',  'super_admin', true, true, 0),
-  ('<afnan-uuid>',  'afnan.bakri',    'Afnan Bakri',   'bkriafnan@gmail.com','admin',       true, true, 0);
+UPDATE profiles
+   SET username = 'sultan.alallah',
+       full_name = 'Sultan Alallah',
+       role = 'super_admin'
+ WHERE email = 'admin@pmnh.gov.sa';
+
+UPDATE profiles
+   SET username = 'afnan.bakri',
+       full_name = 'Afnan Bakri',
+       role = 'admin'
+ WHERE email = 'bkriafnan@gmail.com';
 ```
 
-`login_count = 0` triggers the forced-change-password flow on first sign-in. The `username` column has a `UNIQUE` constraint, so duplicates are blocked at the database level.
+Both rows still have `login_count = 0` from the trigger, so the **first sign-in is redirected to `/change-password`** (mandatory). The `username` column has a `UNIQUE` constraint, so duplicates are blocked at the database level; the trigger appends a numeric suffix if a collision happens during auto-creation.
+
+#### Pass role + name at user-creation time (advanced)
+
+If you create users programmatically via the Supabase admin API, you can skip the UPDATE by passing the desired username, full name and role through `raw_user_meta_data` — the trigger reads them:
+
+```ts
+await supabase.auth.admin.createUser({
+  email: 'admin@pmnh.gov.sa',
+  password: 'ASas123456ASas',
+  email_confirm: true,
+  user_metadata: { username: 'sultan.alallah', full_name: 'Sultan Alallah', role: 'super_admin' },
+})
+```
 
 ### 2.4 Create the Storage bucket
 

@@ -71,6 +71,8 @@ export interface Profile {
   phone_verified: boolean
   last_login?: string
   login_count: number
+  failed_login_attempts?: number
+  locked_until?: string
   created_at: string
   updated_at: string
   department?: Department

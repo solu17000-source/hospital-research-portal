@@ -3,9 +3,13 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Sidebar } from '@/components/layout/Sidebar'
 import { TopBar } from '@/components/layout/TopBar'
-import { useAuthStore } from '@/lib/auth-store'
+import { useAuthHydrate, useAuthStore } from '@/lib/auth-store'
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  // Validates the persisted Zustand state against the live Supabase session
+  // on mount and subscribes to token-refresh / sign-out from other tabs so
+  // hard-reloads after login keep the user authenticated correctly.
+  useAuthHydrate()
   const { isAuthenticated, isLoading, mustChangePassword } = useAuthStore()
   const router = useRouter()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
