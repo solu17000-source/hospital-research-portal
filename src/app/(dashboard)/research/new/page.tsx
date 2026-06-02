@@ -10,9 +10,8 @@ import {
 import Link from 'next/link'
 import toast from 'react-hot-toast'
 import { createResearch, useDepartments, type ResearchInput } from '@/lib/data-source'
-import { DEMO_DEPARTMENTS, DEMO_USERS } from '@/lib/demo-data'
-import { isDemoMode } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
+import type { Department } from '@/types'
 import { RESEARCH_CATEGORIES, WORKFLOW_STAGES, type ApprovalStatus,
   type JournalQuartile, type IndexedDatabase, type PriorityLevel,
   type WorkflowStage } from '@/types'
@@ -31,11 +30,11 @@ const STEPS = [
 export default function NewResearchPage() {
   const router = useRouter()
   const { user } = useAuthStore()
-  // Live department list — real Supabase UUIDs when configured, demo seed
-  // otherwise. Critical: without this the dropdown emits short demo ids
-  // like "d4" that the Supabase `uuid` column rejects.
+  // Live department list — real Supabase UUIDs. Critical: without this
+  // the dropdown emits short demo ids like "d4" that the Supabase `uuid`
+  // column rejects on insert.
   const { data: deptData } = useDepartments()
-  const departments = deptData ?? DEMO_DEPARTMENTS
+  const departments: Department[] = deptData ?? []
 
   const [step, setStep] = useState(1)
   const [saving, setSaving] = useState(false)
@@ -114,8 +113,7 @@ export default function NewResearchPage() {
       return
     }
 
-    const mode = isDemoMode ? 'saved locally' : 'saved to database'
-    toast.success(`${result.row.research_id} created — ${mode}. Redirecting…`)
+    toast.success(`${result.row.research_id} created — saved to database. Redirecting…`)
     // Small delay so the user sees the toast before the route swap.
     setTimeout(() => router.push(`/research/${result.row.id}`), 900)
   }

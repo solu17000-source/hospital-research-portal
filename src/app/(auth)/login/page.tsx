@@ -11,7 +11,6 @@ import {
 } from 'lucide-react'
 
 import { useAuthStore, type LoginResult } from '@/lib/auth-store'
-import { isDemoMode } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 
 type Lang = 'en' | 'ar'
@@ -169,23 +168,6 @@ export default function LoginPage() {
     }
     setErrorCode(result.errorCode ?? 'unknown')
   }
-
-  // --------- demo credentials hint (only when in demo mode) ---------
-  const demoCredsHint = (
-    <div
-      className="flex items-start gap-2.5 p-3 rounded-xl text-xs"
-      style={{ background: 'rgba(96, 165, 250, 0.10)', border: '1px solid rgba(96, 165, 250, 0.25)' }}
-    >
-      <Sparkles className="w-4 h-4 text-blue-300 flex-shrink-0 mt-0.5" />
-      <div className="text-blue-100/85 leading-relaxed">
-        <span className="font-bold text-blue-200">{t.demoHintTitle} · </span>
-        {format(t.demoHintBody, {
-          creds: 'sultan.alallah / afnan.bakri',
-          pw: 'ASas123456ASas',
-        })}
-      </div>
-    </div>
-  )
 
   return (
     <div
@@ -391,9 +373,6 @@ export default function LoginPage() {
                   </motion.div>
                 )}
               </AnimatePresence>
-
-              {/* Demo hint (only in demo mode) */}
-              {isDemoMode && demoCredsHint}
 
               {/* Submit */}
               <motion.button

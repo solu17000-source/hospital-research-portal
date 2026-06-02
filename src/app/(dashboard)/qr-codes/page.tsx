@@ -15,7 +15,6 @@ import {
 
 import { DEMO_DEPARTMENTS, DEMO_RESEARCH } from '@/lib/demo-data'
 import { mergeParticipants, type SyncParticipant, type SyncResult } from '@/lib/google-sync'
-import { isDemoMode } from '@/lib/supabase'
 import { cn, formatDate, timeAgo } from '@/lib/utils'
 
 // ---------------- Types ----------------
@@ -621,8 +620,8 @@ export default function QRCodesPage() {
             {t.subtitle}
             <span className="mx-2 text-gray-300" aria-hidden>·</span>
             <span className="inline-flex items-center gap-1.5 text-xs">
-              <span className={cn('inline-block w-1.5 h-1.5 rounded-full', isDemoMode ? 'bg-amber-400' : 'bg-emerald-400')} aria-hidden />
-              {isDemoMode ? t.demoData : t.liveData}
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden />
+              {t.liveData}
             </span>
           </p>
         </div>

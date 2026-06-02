@@ -10,7 +10,6 @@ import {
 
 import { extractSheetId, mergeParticipants, type SyncParticipant, type SyncResult } from '@/lib/google-sync'
 import { useLang } from '@/lib/i18n'
-import { isDemoMode } from '@/lib/supabase'
 import { cn, timeAgo } from '@/lib/utils'
 
 type LinkKind = 'sheet' | 'form' | 'folder' | 'file'
@@ -201,8 +200,8 @@ export default function GoogleDrivePage() {
             {t.pageSub}
             <span className="mx-2 text-gray-300" aria-hidden>·</span>
             <span className="inline-flex items-center gap-1.5 text-xs">
-              <span className={cn('inline-block w-1.5 h-1.5 rounded-full', isDemoMode ? 'bg-amber-400' : 'bg-emerald-400')} />
-              {isDemoMode ? t.demoData : t.liveData}
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden />
+              {t.liveData}
             </span>
           </p>
         </div>

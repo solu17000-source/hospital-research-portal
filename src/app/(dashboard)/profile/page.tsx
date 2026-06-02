@@ -12,7 +12,6 @@ import {
 
 import { useAuthStore } from '@/lib/auth-store'
 import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
-import { isDemoMode } from '@/lib/supabase'
 import { cn, formatDate, getInitials, timeAgo } from '@/lib/utils'
 import { ROLE_LABELS } from '@/types'
 
@@ -966,9 +965,7 @@ export default function ProfilePage() {
 
                 <div className="pt-4 border-t border-gray-100">
                   <p className="text-xs text-gray-500">
-                    {isDemoMode
-                      ? 'Demo mode — login count and last-login timestamps come from seed data.'
-                      : 'Live data from your Supabase profile row.'}
+                    Live data from your Supabase profile row.
                   </p>
                 </div>
               </div>

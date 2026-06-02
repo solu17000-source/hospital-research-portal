@@ -18,7 +18,6 @@ import { StatCard } from '@/components/dashboard/StatCard'
 import {
   useAiInsights, useDepartments, useNotifications, useResearch, useStats,
 } from '@/lib/data-source'
-import { isDemoMode } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn, daysUntil, getStatusBadgeClass, timeAgo } from '@/lib/utils'
 import {
@@ -398,8 +397,8 @@ export default function DashboardPage() {
           </div>
         </div>
         <div className="relative mt-4 flex items-center gap-1.5 text-[11px] text-blue-200/80">
-          <span className={cn('inline-block w-1.5 h-1.5 rounded-full', isDemoMode ? 'bg-amber-400' : 'bg-emerald-400')} aria-hidden />
-          {isDemoMode ? t.demoData : t.liveData}
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden />
+          {t.liveData}
         </div>
       </motion.div>
 

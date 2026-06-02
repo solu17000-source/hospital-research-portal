@@ -11,10 +11,8 @@ import {
 } from 'lucide-react'
 
 import { createResearchBulk, useDepartments, type ResearchInput, type BulkResult } from '@/lib/data-source'
-import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
 import type { Department } from '@/types'
 import { useLang } from '@/lib/i18n'
-import { isDemoMode } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn } from '@/lib/utils'
 import type {
@@ -336,7 +334,8 @@ export default function ImportResearchPage() {
   // Live departments — so a "Department" cell that reads "Nursing" resolves
   // to the real Supabase UUID, not the demo short id.
   const { data: deptData } = useDepartments()
-  const departments = deptData ?? DEMO_DEPARTMENTS
+  // No demo fallback — empty list while Supabase is in flight.
+  const departments: Department[] = deptData ?? []
 
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -478,8 +477,8 @@ export default function ImportResearchPage() {
               {t.pageSub}
               <span className="mx-2 text-gray-300" aria-hidden>·</span>
               <span className="inline-flex items-center gap-1.5 text-xs">
-                <span className={cn('inline-block w-1.5 h-1.5 rounded-full', isDemoMode ? 'bg-amber-400' : 'bg-emerald-400')} />
-                {isDemoMode ? t.demoData : t.liveData}
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden />
+                {t.liveData}
               </span>
             </p>
           </div>

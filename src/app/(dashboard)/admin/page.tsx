@@ -15,7 +15,6 @@ import {
   DEMO_ACTIVITY_LOGS, DEMO_DEPARTMENTS, DEMO_NOTIFICATIONS, DEMO_RESEARCH,
   DEMO_STATS, DEMO_USERS,
 } from '@/lib/demo-data'
-import { isDemoMode } from '@/lib/supabase'
 import { cn, timeAgo } from '@/lib/utils'
 import { ROLE_LABELS, type UserRole } from '@/types'
 
@@ -286,8 +285,8 @@ export default function AdminPage() {
           </div>
         </div>
         <p className="relative mt-4 flex items-center gap-1.5 text-[11px] text-blue-200/80">
-          <span className={cn('inline-block w-1.5 h-1.5 rounded-full', isDemoMode ? 'bg-amber-400' : 'bg-emerald-400')} aria-hidden />
-          {isDemoMode ? t.demoData : t.liveData}
+          <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden />
+          {t.liveData}
         </p>
       </motion.div>
 
@@ -429,14 +428,14 @@ export default function AdminPage() {
             <HealthRow
               icon={Cloud}
               label={t.healthSync}
-              status={isDemoMode ? 'demo' : 'active'}
-              text={isDemoMode ? t.healthStatusDemo : t.healthStatusActive}
+              status="active"
+              text={t.healthStatusActive}
             />
             <HealthRow
               icon={Database}
               label={t.healthDb}
-              status={isDemoMode ? 'demo' : 'active'}
-              text={isDemoMode ? t.healthStatusDemo : t.healthStatusHealthy}
+              status="active"
+              text={t.healthStatusHealthy}
             />
           </ul>
         </div>

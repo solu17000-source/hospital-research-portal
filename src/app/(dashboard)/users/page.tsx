@@ -14,7 +14,6 @@ import {
 import { useAuthStore } from '@/lib/auth-store'
 import { DEMO_DEPARTMENTS, DEMO_USERS } from '@/lib/demo-data'
 import { canManageUsers } from '@/lib/permissions'
-import { isDemoMode } from '@/lib/supabase'
 import { cn, formatDate, getInitials, timeAgo } from '@/lib/utils'
 import { ROLE_LABELS, type Profile, type UserRole } from '@/types'
 
@@ -474,8 +473,8 @@ export default function UsersPage() {
             {t.pageSub}
             <span className="mx-2 text-gray-300" aria-hidden>·</span>
             <span className="inline-flex items-center gap-1.5 text-xs">
-              <span className={cn('inline-block w-1.5 h-1.5 rounded-full', isDemoMode ? 'bg-amber-400' : 'bg-emerald-400')} aria-hidden />
-              {isDemoMode ? t.demoData : t.liveData}
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400" aria-hidden />
+              {t.liveData}
             </span>
           </p>
         </div>
