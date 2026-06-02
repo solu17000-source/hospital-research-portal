@@ -18,14 +18,26 @@ import { StatCard } from '@/components/dashboard/StatCard'
 import {
   useAiInsights, useDepartments, useNotifications, useResearch, useStats,
 } from '@/lib/data-source'
-import {
-  DEMO_AI_INSIGHTS, DEMO_DEPARTMENTS, DEMO_NOTIFICATIONS, DEMO_RESEARCH,
-  DEMO_STATS, DEPT_PERFORMANCE_DATA, MONTHLY_RESEARCH_DATA,
-} from '@/lib/demo-data'
 import { isDemoMode } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn, daysUntil, getStatusBadgeClass, timeAgo } from '@/lib/utils'
-import { ROLE_LABELS, WORKFLOW_STAGES } from '@/types'
+import {
+  ROLE_LABELS, WORKFLOW_STAGES,
+  type DashboardStats, type Department, type ResearchProject,
+} from '@/types'
+
+// Empty defaults — used while the live Supabase query is in flight so the
+// dashboard renders zeros / empty lists instead of fake demo numbers.
+const EMPTY_STATS: DashboardStats = {
+  total_projects: 0, active_projects: 0, completed_projects: 0, published_papers: 0,
+  delayed_projects: 0, pending_irb: 0, upcoming_deadlines: 0,
+  total_departments: 0, total_users: 0, this_month_new: 0,
+  funded_projects: 0, total_budget: 0,
+  q1_publications: 0, q2_publications: 0, q3_publications: 0, q4_publications: 0,
+  open_access_count: 0,
+}
+const EMPTY_RESEARCH: ResearchProject[] = []
+const EMPTY_DEPARTMENTS: Department[] = []
 
 type Lang = 'en' | 'ar'
 
@@ -194,21 +206,20 @@ function greetingKey(date = new Date()): 'morning' | 'afternoon' | 'evening' {
 }
 
 export default function DashboardPage() {
-  // Live data when Supabase is configured, demo fallback otherwise. Each
-  // hook returns `data: null` while loading — we layer `?? DEMO_*` so the
-  // page paints fully from the first render and gracefully refreshes once
-  // the live query resolves.
-  const { data: statsData }       = useStats()
-  const { data: researchData }    = useResearch()
-  const { data: insightsData }    = useAiInsights()
+  // Every number on this page comes from Supabase. While the live query is
+  // in flight each hook returns `data: null` — we substitute empty defaults
+  // so the page renders zeros / blank lists rather than seeded demo numbers.
+  const { data: statsData }        = useStats()
+  const { data: researchData }     = useResearch()
+  const { data: insightsData }     = useAiInsights()
   const { data: notificationData } = useNotifications()
-  const { data: departmentsData } = useDepartments()
+  const { data: departmentsData }  = useDepartments()
 
-  const stats         = statsData         ?? DEMO_STATS
-  const researchList  = researchData      ?? DEMO_RESEARCH
-  const aiInsights    = insightsData      ?? DEMO_AI_INSIGHTS
-  const notifList     = notificationData  ?? DEMO_NOTIFICATIONS
-  const departments   = departmentsData   ?? DEMO_DEPARTMENTS
+  const stats         = statsData         ?? EMPTY_STATS
+  const researchList  = researchData      ?? EMPTY_RESEARCH
+  const aiInsights    = insightsData      ?? []
+  const notifList     = notificationData  ?? []
+  const departments   = departmentsData   ?? EMPTY_DEPARTMENTS
 
   const DEPT_BY_ID = useMemo(
     () => new Map(departments.map(d => [d.id, d])),
@@ -256,13 +267,69 @@ export default function DashboardPage() {
     { name: 'Q4', value: stats.q4_publications, color: '#6b7280' },
   ], [stats])
 
-  const statusPieData = useMemo(() => [
-    { name: t.statusActive,          value: 74, color: '#22c55e' },
-    { name: t.statusCompletedShort,  value: 27, color: '#3b82f6' },
-    { name: t.statusDelayed,         value: 8,  color: '#f97316' },
-    { name: t.statusOnHold,          value: 5,  color: '#6b7280' },
-    { name: t.statusPending,         value: 4,  color: '#f59e0b' },
-  ], [t])
+  // Status pie — counted live from the research list.
+  const statusPieData = useMemo(() => {
+    const by = (s: ResearchProject['status']) => researchList.filter(r => r.status === s).length
+    return [
+      { name: t.statusActive,         value: by('active'),           color: '#22c55e' },
+      { name: t.statusCompletedShort, value: by('completed'),        color: '#3b82f6' },
+      { name: t.statusDelayed,        value: by('delayed'),          color: '#f97316' },
+      { name: t.statusOnHold,         value: by('on_hold'),          color: '#6b7280' },
+      { name: t.statusPending,        value: by('pending_approval'), color: '#f59e0b' },
+    ]
+  }, [researchList, t])
+
+  // Monthly research activity for the current year — new / completed /
+  // published bucketed by month, computed from real research_projects rows.
+  const monthlyResearchData = useMemo(() => {
+    const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+    const year = new Date().getFullYear()
+    const rows = months.map(m => ({ month: m, new: 0, completed: 0, published: 0 }))
+    for (const r of researchList) {
+      // "new" = created this year, bucketed by created_at month
+      if (r.created_at?.startsWith(String(year))) {
+        const idx = new Date(r.created_at).getMonth()
+        if (idx >= 0 && idx <= 11) rows[idx].new += 1
+      }
+      // "completed" = actual_completion_date this year
+      if (r.actual_completion_date?.startsWith(String(year))) {
+        const idx = new Date(r.actual_completion_date).getMonth()
+        if (idx >= 0 && idx <= 11) rows[idx].completed += 1
+      }
+      // "published" = publication_date this year
+      if (r.publication_date?.startsWith(String(year))) {
+        const idx = new Date(r.publication_date).getMonth()
+        if (idx >= 0 && idx <= 11) rows[idx].published += 1
+      }
+    }
+    return rows
+  }, [researchList])
+
+  // Per-department aggregates for the bar chart — name + project count +
+  // published count. Top 8 departments by project count.
+  const departmentPerformance = useMemo(() => {
+    return departments.map(d => {
+      const list = researchList.filter(r => r.department_id === d.id)
+      return {
+        dept: d.code || d.name.slice(0, 8),
+        fullName: d.name,
+        projects: list.length,
+        published: list.filter(r => r.publication_status === 'published').length,
+      }
+    })
+      .filter(d => d.projects > 0)
+      .sort((a, b) => b.projects - a.projects)
+      .slice(0, 8)
+  }, [researchList, departments])
+
+  // Total funded budget — live sum, formatted compactly.
+  const formattedBudget = useMemo(() => {
+    const total = researchList.reduce((s, r) => s + (r.budget ?? 0), 0)
+    if (total === 0) return '0'
+    if (total >= 1_000_000) return (total / 1_000_000).toFixed(2) + 'M'
+    if (total >= 1_000) return (total / 1_000).toFixed(1) + 'K'
+    return String(Math.round(total))
+  }, [researchList])
 
   const firstName = (user?.full_name || '').split(' ')[0] || (lang === 'ar' ? 'الزائر' : 'there')
 
@@ -337,19 +404,22 @@ export default function DashboardPage() {
       </motion.div>
 
       {/* ===== Primary KPI cards ===== */}
+      {/* `change` percentages are intentionally omitted — without a
+          period-over-period baseline in the DB we can't compute them
+          honestly, and showing fake deltas defeats the purpose. */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard title={t.kpiTotal} value={stats.total_projects} icon={FlaskConical}
           gradient="linear-gradient(135deg, #1e40af 0%, #3b82f6 100%)"
-          change={8} changeLabel={t.kpiSubTotal} index={0} />
+          changeLabel={t.kpiSubTotal} index={0} />
         <StatCard title={t.kpiActive} value={stats.active_projects} icon={Activity}
           gradient="linear-gradient(135deg, #15803d 0%, #22c55e 100%)"
-          change={12} changeLabel={t.kpiSubActive} index={1} />
+          changeLabel={t.kpiSubActive} index={1} />
         <StatCard title={t.kpiPublished} value={stats.published_papers} icon={BookOpen}
           gradient="linear-gradient(135deg, #6d28d9 0%, #a78bfa 100%)"
-          change={5} changeLabel={t.kpiSubPublished} index={2} />
+          changeLabel={t.kpiSubPublished} index={2} />
         <StatCard title={t.kpiDelayed} value={stats.delayed_projects} icon={AlertTriangle}
           gradient="linear-gradient(135deg, #c2410c 0%, #f97316 100%)"
-          change={-3} changeLabel={t.kpiSubDelayed} index={3} />
+          changeLabel={t.kpiSubDelayed} index={3} />
       </div>
 
       {/* ===== Secondary stats ===== */}
@@ -360,7 +430,7 @@ export default function DashboardPage() {
           gradient="linear-gradient(135deg, #0891b2 0%, #22d3ee 100%)" index={5} />
         <StatCard title={t.kpiNewMonth} value={stats.this_month_new} icon={TrendingUp}
           gradient="linear-gradient(135deg, #9d174d 0%, #ec4899 100%)" index={6} />
-        <StatCard title={t.kpiBudget} value="4.85M" icon={DollarSign} prefix="SAR "
+        <StatCard title={t.kpiBudget} value={formattedBudget} icon={DollarSign} prefix="SAR "
           gradient="linear-gradient(135deg, #3730a3 0%, #6366f1 100%)" index={7} />
       </div>
 
@@ -375,7 +445,7 @@ export default function DashboardPage() {
             <span className="badge bg-blue-100 text-blue-700 border-blue-200">{new Date().getFullYear()}</span>
           </div>
           <ResponsiveContainer width="100%" height={220}>
-            <AreaChart data={MONTHLY_RESEARCH_DATA}>
+            <AreaChart data={monthlyResearchData}>
               <defs>
                 <linearGradient id="colorNew" x1="0" y1="0" x2="0" y2="1">
                   <stop offset="5%" stopColor="#2563eb" stopOpacity={0.3} />
@@ -442,7 +512,7 @@ export default function DashboardPage() {
             </Link>
           </div>
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={DEPT_PERFORMANCE_DATA} barCategoryGap="30%">
+            <BarChart data={departmentPerformance} barCategoryGap="30%">
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="dept" tick={{ fontSize: 11, fill: '#9ca3af' }} reversed={isRtl} />
               <YAxis tick={{ fontSize: 11, fill: '#9ca3af' }} orientation={isRtl ? 'right' : 'left'} />
