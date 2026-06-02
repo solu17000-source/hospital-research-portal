@@ -13,6 +13,7 @@ import {
 
 import { useAuthStore } from '@/lib/auth-store'
 import { DEMO_DEPARTMENTS, DEMO_USERS } from '@/lib/demo-data'
+import { canManageUsers } from '@/lib/permissions'
 import { isDemoMode } from '@/lib/supabase'
 import { cn, formatDate, getInitials, timeAgo } from '@/lib/utils'
 import { ROLE_LABELS, type Profile, type UserRole } from '@/types'
@@ -367,9 +368,10 @@ export default function UsersPage() {
   function openEdit(u: ExtendedProfile) { setEditing(u); setCreatedCreds(null); setModalOpen(true) }
   function closeModal() { setModalOpen(false); setEditing(null) }
 
-  // Access gate ---------------------------------------------------
+  // Access gate — per spec, ONLY the Super Admin can view / manage users.
+  // Regular `admin` accounts (Afnan Bakri) see the access-denied screen.
   if (!currentUser) return null
-  if (currentUser.role !== 'admin' && currentUser.role !== 'super_admin') {
+  if (!canManageUsers(currentUser.role)) {
     return (
       <div dir={isRtl ? 'rtl' : 'ltr'} className="min-h-[60vh] flex items-center justify-center">
         <div className="premium-card p-10 max-w-md text-center">

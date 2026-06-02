@@ -11,7 +11,9 @@ import {
   Search, SlidersHorizontal, Users, X,
 } from 'lucide-react'
 
+import { useAuthStore } from '@/lib/auth-store'
 import { deleteResearch, useDepartments, useResearch } from '@/lib/data-source'
+import { canDelete } from '@/lib/permissions'
 import { isDemoMode } from '@/lib/supabase'
 import {
   cn, formatDate, getPriorityClass, getStatusBadgeClass, truncate,
@@ -236,6 +238,13 @@ function downloadBlob(content: BlobPart, filename: string, mime: string) {
 }
 
 export default function ResearchPage() {
+  // Role gate for the destructive Trash button. Admin role can view + edit
+  // research projects but cannot delete them — that power is reserved for
+  // the Super Admin per spec, and is enforced server-side by the RLS
+  // policy `research_delete_super_admin_only` (migration 008).
+  const userRole = useAuthStore(s => s.user?.role)
+  const userCanDelete = canDelete(userRole)
+
   const [lang, setLang] = useState<Lang>('en')
   useEffect(() => { setLang(readLangCookie()) }, [])
   useEffect(() => {
@@ -394,6 +403,10 @@ export default function ResearchPage() {
    * list immediately — no manual reload needed.
    */
   async function archive(id: string) {
+    if (!userCanDelete) {
+      toast.error('الحذف مقيّد على المسؤول العام فقط.')
+      return
+    }
     const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
     const isUuid = UUID_RE.test(id)
     if (!confirm('Delete this research project? This cannot be undone.')) return
@@ -851,14 +864,16 @@ export default function ResearchPage() {
                           >
                             <QrCode className="w-3.5 h-3.5" />
                           </Link>
-                          <button
-                            type="button"
-                            onClick={() => archive(r.id)}
-                            title={t.actionArchive}
-                            className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-orange-600 hover:bg-orange-50 transition-all"
-                          >
-                            <ArchiveRestore className="w-3.5 h-3.5" />
-                          </button>
+                          {userCanDelete && (
+                            <button
+                              type="button"
+                              onClick={() => archive(r.id)}
+                              title={t.actionArchive}
+                              className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-orange-600 hover:bg-orange-50 transition-all"
+                            >
+                              <ArchiveRestore className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>
@@ -959,14 +974,16 @@ export default function ResearchPage() {
                       >
                         <QrCode className="w-3.5 h-3.5" />
                       </Link>
-                      <button
-                        type="button"
-                        onClick={() => archive(r.id)}
-                        className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-orange-600 hover:bg-orange-50 transition-all"
-                        title={t.actionArchive}
-                      >
-                        <ArchiveRestore className="w-3.5 h-3.5" />
-                      </button>
+                      {userCanDelete && (
+                        <button
+                          type="button"
+                          onClick={() => archive(r.id)}
+                          className="w-7 h-7 flex items-center justify-center rounded-lg text-gray-400 hover:text-orange-600 hover:bg-orange-50 transition-all"
+                          title={t.actionArchive}
+                        >
+                          <ArchiveRestore className="w-3.5 h-3.5" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 </motion.div>

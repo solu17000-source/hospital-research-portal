@@ -1,105 +1,133 @@
 'use client'
 
 /**
- * Data source abstraction — one entry point per collection that returns
- * Supabase rows when the project is configured, and demo data otherwise.
+ * Data source — every collection is fetched from Supabase, full stop.
  *
- * Two APIs are exposed for each collection:
+ * There is no demo-mode branch, no DEMO_* fallback, no localStorage shim.
+ * If Supabase returns an error or an empty rowset, the caller gets `[]`
+ * (or zeroed stats / `null`) and the UI shows its empty state. This
+ * eliminates the class of bugs where the page silently rendered 8 ghost
+ * rows from `DEMO_RESEARCH` while the live database had 16.
  *
- *   • a plain async `fetch*` function — for server actions, server
- *     components, and code outside React.
- *   • a thin `use*` hook — for dashboard pages. The hook returns the
- *     full state machine `{ data, loading, error, refetch }` so callers
- *     don't have to wire `useEffect` themselves. While loading it returns
- *     the demo fallback synchronously, which keeps the existing pages
- *     working unchanged when wired through `data ?? DEMO_*`.
+ * Two APIs per collection:
  *
- * Migration pattern for an existing page that imports DEMO_* directly:
- *
- *     // before
- *     import { DEMO_STATS } from '@/lib/demo-data'
- *     const stats = DEMO_STATS
- *
- *     // after
- *     import { useStats } from '@/lib/data-source'
- *     import { DEMO_STATS } from '@/lib/demo-data'
- *     const { data } = useStats()
- *     const stats = data ?? DEMO_STATS
- *
- * That's a 2-line diff per page — the rest of the page stays synchronous
- * and renders demo data briefly while the live query resolves.
+ *   • `fetch*`  — plain async function, usable from server actions / RSC.
+ *   • `use*`    — thin React hook returning `{data, loading, error, refetch}`.
+ *                Subscribes to the global refresh signal so the UI updates
+ *                instantly after any successful mutation, no manual reload.
  */
 
 import { useCallback, useEffect, useState } from 'react'
 
-import {
-  DEMO_ACTIVITY_LOGS, DEMO_AI_INSIGHTS, DEMO_DEPARTMENTS, DEMO_NOTIFICATIONS,
-  DEMO_RESEARCH, DEMO_STATS, DEMO_USERS,
-} from './demo-data'
-import { createClient, isDemoMode } from './supabase'
+import { createClient } from './supabase'
 import type {
   AIInsight, ActivityLog, DashboardStats, Department, Notification, Profile,
   ResearchProject,
 } from '@/types'
 
 // ============================================================
-// Local persistence (demo mode only)
-//
-// User-created research rows are kept in localStorage so they survive
-// reloads and immediately appear in the dashboard, /research list and
-// stats. When Supabase is wired, this layer falls silent — rows live
-// in the `research_projects` table and RLS gates access.
+// Refresh signal — pinged by every successful mutation so every
+// active `useDataSource` hook refetches and the UI updates instantly
+// without manual reload.
 // ============================================================
+const refreshSubscribers = new Set<() => void>()
+export function subscribeRefresh(cb: () => void): () => void {
+  refreshSubscribers.add(cb)
+  return () => { refreshSubscribers.delete(cb) }
+}
+function notifyRefresh(): void {
+  refreshSubscribers.forEach(cb => {
+    try { cb() } catch { /* ignore */ }
+  })
+}
 
-const LOCAL_RESEARCH_KEY = 'pmnh-research-local-v1'
+// ============================================================
+// Race utility — bounds every Supabase call so a hung fetch can't
+// leave the UI's "Saving…" state stuck forever.
+// ============================================================
+function withTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    Promise.resolve(p).then(
+      v => { clearTimeout(timer); resolve(v) },
+      e => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
 
-function loadLocalResearch(): ResearchProject[] {
-  if (typeof window === 'undefined') return []
+// ============================================================
+// Auth hydration — forces the supabase-js auth state into memory
+// from cookies BEFORE we make a write. Skipping this was the root
+// cause of `auth.uid()` coming back null inside RLS policies.
+// ============================================================
+async function ensureAuthenticated(
+  supabase: ReturnType<typeof createClient>,
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
   try {
-    const raw = localStorage.getItem(LOCAL_RESEARCH_KEY)
-    return raw ? (JSON.parse(raw) as ResearchProject[]) : []
-  } catch { return [] }
-}
-function saveLocalResearch(list: ResearchProject[]) {
-  if (typeof window === 'undefined') return
-  try { localStorage.setItem(LOCAL_RESEARCH_KEY, JSON.stringify(list)) } catch {/* quota */}
-}
-
-/** Sequence number for demo-mode research IDs — kept separately so we don't
- *  collide with the seeded PMNH-2024-0001..N range. */
-function nextDemoResearchId(): string {
-  const year = new Date().getFullYear()
-  const existing = loadLocalResearch()
-  const usedNums = new Set(
-    [...DEMO_RESEARCH, ...existing]
-      .map(r => r.research_id.match(/PMNH-\d{4}-(\d+)/)?.[1])
-      .filter(Boolean)
-      .map(s => parseInt(s as string, 10)),
-  )
-  let n = 5000 // start above the seed range
-  while (usedNums.has(n)) n++
-  return `PMNH-${year}-${String(n).padStart(4, '0')}`
+    const { data: { session }, error } = await supabase.auth.getSession()
+    if (error) {
+      console.error('[ensureAuthenticated] getSession error:', error)
+      return { ok: false, error: error.message }
+    }
+    if (!session?.user) {
+      const { data: refreshed } = await supabase.auth.refreshSession()
+      if (!refreshed?.session?.user) {
+        return { ok: false, error: 'الجلسة منتهية — يرجى تسجيل الدخول من جديد.' }
+      }
+      return { ok: true, userId: refreshed.session.user.id }
+    }
+    return { ok: true, userId: session.user.id }
+  } catch (e) {
+    console.error('[ensureAuthenticated] threw:', e)
+    return { ok: false, error: (e as Error).message }
+  }
 }
 
 // ============================================================
-// Fetch primitives — async, isomorphic, always return *something*.
-// Every loader falls back to demo data when Supabase isn't configured
-// or returns an error so the dashboard never shows a blank screen.
+// Empty fallbacks — used when Supabase returns nothing OR errors.
+// Never demo data. The UI surfaces a real empty state instead.
+// ============================================================
+const EMPTY_STATS: DashboardStats = {
+  total_projects: 0,
+  active_projects: 0,
+  completed_projects: 0,
+  published_papers: 0,
+  delayed_projects: 0,
+  pending_irb: 0,
+  upcoming_deadlines: 0,
+  total_departments: 0,
+  total_users: 0,
+  this_month_new: 0,
+  funded_projects: 0,
+  total_budget: 0,
+  q1_publications: 0,
+  q2_publications: 0,
+  q3_publications: 0,
+  q4_publications: 0,
+  open_access_count: 0,
+}
+
+// ============================================================
+// Fetch primitives — async, always return *something* sane.
 // ============================================================
 
 export async function fetchDepartments(): Promise<Department[]> {
-  if (isDemoMode) return DEMO_DEPARTMENTS
   const supabase = createClient()
-  if (!supabase) return DEMO_DEPARTMENTS
   try {
     const { data, error } = await supabase
       .from('departments')
       .select('*')
       .eq('is_active', true)
       .order('research_count', { ascending: false })
-    if (error || !data) return DEMO_DEPARTMENTS
-    return data as Department[]
-  } catch { return DEMO_DEPARTMENTS }
+    if (error) {
+      console.error('[fetchDepartments] Supabase error:', error)
+      return []
+    }
+    return (data as Department[] | null) ?? []
+  } catch (e) {
+    console.error('[fetchDepartments] threw:', e)
+    return []
+  }
 }
 
 export type ResearchQuery = {
@@ -108,18 +136,9 @@ export type ResearchQuery = {
   publicOnly?: boolean
   limit?: number
 }
-/** In demo mode the local-storage rows are merged in *first* so the most
- *  recently created project sorts to the top of the dashboard / list. */
-function demoResearchMerged(): ResearchProject[] {
-  return [...loadLocalResearch(), ...DEMO_RESEARCH]
-}
+
 export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchProject[]> {
-  if (isDemoMode) return applyResearchFilters(demoResearchMerged(), opts)
   const supabase = createClient()
-  if (!supabase) {
-    console.warn('[fetchResearch] No Supabase client — returning empty list.')
-    return []
-  }
   try {
     let q = supabase
       .from('research_projects')
@@ -132,10 +151,6 @@ export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchP
     if (opts.limit)        q = q.limit(opts.limit)
     const { data, error } = await q
     if (error) {
-      // Silently shimming in DEMO_RESEARCH used to hide real auth/RLS
-      // failures behind 8 ghost rows that looked authentic. Surface the
-      // error to the console + return [] so the UI shows the truthful
-      // empty state instead.
       console.error('[fetchResearch] Supabase error:', error)
       return []
     }
@@ -145,108 +160,97 @@ export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchP
     return []
   }
 }
-function applyResearchFilters(list: ResearchProject[], opts: ResearchQuery): ResearchProject[] {
-  let out = list.slice()
-  if (opts.departmentId) out = out.filter(r => r.department_id === opts.departmentId)
-  if (opts.status)       out = out.filter(r => r.status === opts.status)
-  if (opts.publicOnly)   out = out.filter(r => r.is_public || r.publication_status === 'published')
-  if (opts.limit)        out = out.slice(0, opts.limit)
-  return out
-}
 
 export async function fetchResearchById(id: string): Promise<ResearchProject | null> {
-  if (isDemoMode) return DEMO_RESEARCH.find(r => r.id === id) ?? null
   const supabase = createClient()
-  if (!supabase) return DEMO_RESEARCH.find(r => r.id === id) ?? null
   try {
-    const { data } = await supabase.from('research_projects').select('*').eq('id', id).maybeSingle()
+    const { data, error } = await supabase
+      .from('research_projects')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle()
+    if (error) {
+      console.error('[fetchResearchById] Supabase error:', error)
+      return null
+    }
     return (data as ResearchProject | null) ?? null
-  } catch { return null }
+  } catch (e) {
+    console.error('[fetchResearchById] threw:', e)
+    return null
+  }
 }
 
 export async function fetchUsers(): Promise<Profile[]> {
-  if (isDemoMode) return DEMO_USERS
   const supabase = createClient()
-  if (!supabase) return DEMO_USERS
   try {
     const { data, error } = await supabase
       .from('profiles')
       .select('*')
       .order('created_at', { ascending: false })
-    if (error || !data) return DEMO_USERS
-    return data as Profile[]
-  } catch { return DEMO_USERS }
+    if (error) {
+      console.error('[fetchUsers] Supabase error:', error)
+      return []
+    }
+    return (data as Profile[] | null) ?? []
+  } catch (e) {
+    console.error('[fetchUsers] threw:', e)
+    return []
+  }
 }
 
 export async function fetchNotifications(userId?: string, limit = 20): Promise<Notification[]> {
-  if (isDemoMode) return DEMO_NOTIFICATIONS.slice(0, limit)
   const supabase = createClient()
-  if (!supabase) return DEMO_NOTIFICATIONS.slice(0, limit)
   try {
-    let q = supabase.from('notifications').select('*').order('created_at', { ascending: false }).limit(limit)
+    let q = supabase
+      .from('notifications')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(limit)
     if (userId) q = q.eq('user_id', userId)
     const { data, error } = await q
-    if (error || !data) return DEMO_NOTIFICATIONS.slice(0, limit)
-    return data as Notification[]
-  } catch { return DEMO_NOTIFICATIONS.slice(0, limit) }
+    if (error) {
+      console.error('[fetchNotifications] Supabase error:', error)
+      return []
+    }
+    return (data as Notification[] | null) ?? []
+  } catch (e) {
+    console.error('[fetchNotifications] threw:', e)
+    return []
+  }
 }
 
 export async function fetchActivityLogs(limit = 50): Promise<ActivityLog[]> {
-  if (isDemoMode) return DEMO_ACTIVITY_LOGS.slice(0, limit)
   const supabase = createClient()
-  if (!supabase) return DEMO_ACTIVITY_LOGS.slice(0, limit)
   try {
     const { data, error } = await supabase
       .from('activity_logs')
       .select('*')
       .order('created_at', { ascending: false })
       .limit(limit)
-    if (error || !data) return DEMO_ACTIVITY_LOGS.slice(0, limit)
-    return data as ActivityLog[]
-  } catch { return DEMO_ACTIVITY_LOGS.slice(0, limit) }
+    if (error) {
+      console.error('[fetchActivityLogs] Supabase error:', error)
+      return []
+    }
+    return (data as ActivityLog[] | null) ?? []
+  } catch (e) {
+    console.error('[fetchActivityLogs] threw:', e)
+    return []
+  }
 }
 
 export async function fetchAiInsights(): Promise<AIInsight[]> {
-  // AI insights are computed rather than stored — for now we ship the demo
-  // set in both modes. When the AI service is wired this will become a real
-  // server call.
-  return DEMO_AI_INSIGHTS
+  // AI insights are computed, not stored. Returning [] until a real
+  // analytics service is wired — the page will render its empty state.
+  return []
 }
 
 /**
- * Aggregate dashboard stats. Uses head-only count queries against Supabase
- * (cheap), filling in any field the database doesn't yet have with the
- * demo equivalent so the dashboard renders fully populated.
+ * Aggregate dashboard stats via head-only count queries (cheap).
+ * Every count returns 0 on error and the UI surfaces zeros instead of
+ * silently leaking fabricated demo numbers.
  */
 export async function fetchStats(): Promise<DashboardStats> {
-  if (isDemoMode) {
-    // Recompute counts from the merged list so user-created rows show up
-    // in the dashboard KPI strip immediately after creation.
-    const all = demoResearchMerged()
-    const by = (pred: (r: ResearchProject) => boolean) => all.filter(pred).length
-    const localCount = loadLocalResearch().length
-    return {
-      ...DEMO_STATS,
-      total_projects:      all.length,
-      active_projects:     by(r => r.status === 'active'),
-      completed_projects:  by(r => r.status === 'completed'),
-      delayed_projects:    by(r => r.status === 'delayed'),
-      published_papers:    by(r => r.publication_status === 'published'),
-      pending_irb:         by(r => r.irb_approval_status === 'pending'),
-      q1_publications:     by(r => r.journal_quartile === 'Q1'),
-      q2_publications:     by(r => r.journal_quartile === 'Q2'),
-      q3_publications:     by(r => r.journal_quartile === 'Q3'),
-      q4_publications:     by(r => r.journal_quartile === 'Q4'),
-      open_access_count:   by(r => !!r.is_open_access),
-      this_month_new:      DEMO_STATS.this_month_new + localCount,
-      funded_projects:     by(r => !!r.funding_source),
-    }
-  }
   const supabase = createClient()
-  if (!supabase) {
-    console.warn('[fetchStats] No Supabase client — returning zeroed stats.')
-    return EMPTY_STATS
-  }
   try {
     const [
       total, active, completed, delayed, published, pendingIrb, q1, q2, q3, q4, openAccess,
@@ -267,8 +271,6 @@ export async function fetchStats(): Promise<DashboardStats> {
       countWhere(supabase, 'profiles', { is_active: true }),
       countWhere(supabase, 'research_projects', { funding_source: { _not_null: true } }),
     ])
-    // Use zeroed stats as the base so we never quietly leak demo numbers
-    // into the production dashboard if one of the counts errors out.
     return {
       ...EMPTY_STATS,
       total_projects: total ?? 0,
@@ -292,33 +294,9 @@ export async function fetchStats(): Promise<DashboardStats> {
   }
 }
 
-// Zeroed dashboard stats — used in production when Supabase can't be reached
-// or every count query errors. Keeps the dashboard truthful (visible zeros)
-// instead of silently displaying demo numbers that look real. Field set must
-// match the DashboardStats interface in types/index.ts exactly.
-const EMPTY_STATS: DashboardStats = {
-  total_projects: 0,
-  active_projects: 0,
-  completed_projects: 0,
-  published_papers: 0,
-  delayed_projects: 0,
-  pending_irb: 0,
-  upcoming_deadlines: 0,
-  total_departments: 0,
-  total_users: 0,
-  this_month_new: 0,
-  funded_projects: 0,
-  total_budget: 0,
-  q1_publications: 0,
-  q2_publications: 0,
-  q3_publications: 0,
-  q4_publications: 0,
-  open_access_count: 0,
-}
-
 /** Tiny helper — head-only count with an arbitrary equality filter set. */
 async function countWhere(
-  client: NonNullable<ReturnType<typeof createClient>>,
+  client: ReturnType<typeof createClient>,
   table: string,
   where?: Record<string, unknown>,
 ): Promise<number | null> {
@@ -334,70 +312,6 @@ async function countWhere(
   }
   const { count } = await q
   return count ?? null
-}
-
-// ============================================================
-// Auth hydration — forces the supabase-js auth state into memory
-// from cookies BEFORE we make a write. Skipping this was the root
-// cause of `auth.uid()` coming back null inside RLS policies — the
-// supabase client had been created, the user had signed in elsewhere,
-// but the JWT lived in cookies (not in this client's memory), so the
-// Authorization: Bearer header was never attached to the request.
-// ============================================================
-async function ensureAuthenticated(
-  supabase: NonNullable<ReturnType<typeof createClient>>,
-): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
-  try {
-    const { data: { session }, error } = await supabase.auth.getSession()
-    if (error) {
-      console.error('[ensureAuthenticated] getSession error:', error)
-      return { ok: false, error: error.message }
-    }
-    if (!session?.user) {
-      // Try one explicit refresh in case the access token expired but the
-      // refresh token is still valid.
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      if (!refreshed?.session?.user) {
-        return { ok: false, error: 'Not signed in — please log in again.' }
-      }
-      return { ok: true, userId: refreshed.session.user.id }
-    }
-    return { ok: true, userId: session.user.id }
-  } catch (e) {
-    console.error('[ensureAuthenticated] threw:', e)
-    return { ok: false, error: (e as Error).message }
-  }
-}
-
-// ============================================================
-// Refresh signal — pinged by every successful mutation so every
-// active `useDataSource` hook refetches and the UI updates instantly
-// without manual reload.
-// ============================================================
-const refreshSubscribers = new Set<() => void>()
-export function subscribeRefresh(cb: () => void): () => void {
-  refreshSubscribers.add(cb)
-  return () => { refreshSubscribers.delete(cb) }
-}
-function notifyRefresh(): void {
-  refreshSubscribers.forEach(cb => {
-    try { cb() } catch { /* ignore */ }
-  })
-}
-
-// ============================================================
-// Race utility — bounds every Supabase call by `ms` so a hung fetch
-// (DNS hiccup, dropped websocket) can't leave the UI's "Saving…"
-// state stuck forever.
-// ============================================================
-function withTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
-    Promise.resolve(p).then(
-      v => { clearTimeout(timer); resolve(v) },
-      e => { clearTimeout(timer); reject(e) },
-    )
-  })
 }
 
 // ============================================================
@@ -418,77 +332,14 @@ export type BulkResult = {
   errors: { row: number; error: string; title?: string }[]
 }
 
-/** Hydrate a `ResearchInput` into a fully-populated `ResearchProject` row,
- *  filling enum defaults that the database has but the client may have
- *  omitted. Used by both the single create + the bulk path. */
-function buildResearchRow(input: ResearchInput): ResearchProject {
-  const now = new Date().toISOString()
-  return {
-    id: `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-    research_id: nextDemoResearchId(),
-    title: input.title.trim(),
-    title_ar: input.title_ar,
-    abstract: input.abstract,
-    keywords: input.keywords,
-    research_category: input.research_category,
-    department_id: input.department_id,
-    principal_investigator_id: input.principal_investigator_id,
-    principal_investigator_name: input.principal_investigator_name,
-    start_date: input.start_date,
-    expected_completion_date: input.expected_completion_date,
-    actual_completion_date: input.actual_completion_date,
-    status: input.status ?? 'active',
-    workflow_stage: input.workflow_stage ?? 'idea_submitted',
-    priority_level: input.priority_level ?? 'medium',
-    completion_percentage: input.completion_percentage ?? 0,
-    irb_approval_status: input.irb_approval_status ?? 'pending',
-    irb_approval_date: input.irb_approval_date,
-    irb_approval_number: input.irb_approval_number,
-    department_approval_status: input.department_approval_status ?? 'pending',
-    department_approval_date: input.department_approval_date,
-    ethics_approval_status: input.ethics_approval_status ?? 'pending',
-    ethics_approval_date: input.ethics_approval_date,
-    funding_source: input.funding_source,
-    budget: input.budget,
-    budget_currency: input.budget_currency ?? 'SAR',
-    publication_status: input.publication_status ?? 'not_submitted',
-    journal_name: input.journal_name,
-    journal_submission_date: input.journal_submission_date,
-    journal_acceptance_date: input.journal_acceptance_date,
-    publication_date: input.publication_date,
-    doi: input.doi,
-    publication_link: input.publication_link,
-    impact_factor: input.impact_factor,
-    citation_count: 0,
-    journal_quartile: input.journal_quartile ?? 'not_indexed',
-    indexed_database: input.indexed_database ?? 'not_indexed',
-    is_open_access: input.is_open_access ?? false,
-    publication_type: input.publication_type,
-    notes: input.notes,
-    is_public: input.is_public ?? false,
-    is_archived: false,
-    created_by: input.created_by,
-    updated_by: input.updated_by,
-    created_at: now,
-    updated_at: now,
-  }
-}
-
 /** Postgres `uuid` columns reject anything that isn't a 128-bit hex
- *  formatted as 8-4-4-4-12. Demo data uses short ids like "d1"/"u4" — if
- *  those leak into a real Supabase insert we have to coerce them to null
- *  or the entire row gets rejected. Schema lets every UUID column on
- *  research_projects be null. */
+ *  formatted as 8-4-4-4-12. Coerce anything else to null. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function uuidOrNull(v?: string | null): string | null {
   if (!v) return null
   return UUID_RE.test(v.trim()) ? v.trim() : null
 }
 
-/** Server input shape — strips client-only synthetic fields when we hand
- *  the payload to Supabase. The DB trigger fills `research_id` itself.
- *  All `uuid`-typed columns go through `uuidOrNull` so demo-mode short
- *  ids never reach the database. */
 function toServerPayload(input: ResearchInput) {
   return {
     title: input.title.trim(),
@@ -527,216 +378,143 @@ function toServerPayload(input: ResearchInput) {
 
 export async function createResearch(input: ResearchInput): Promise<CreateResult<ResearchProject>> {
   if (!input.title || !input.title.trim()) {
-    return { ok: false, error: 'Title is required.' }
+    return { ok: false, error: 'العنوان مطلوب.' }
   }
-
-  // -------- Supabase path --------
-  if (!isDemoMode) {
-    const supabase = createClient()
-    if (supabase) {
-      try {
-        // Force-hydrate the session into the client's memory before the
-        // insert so the Authorization: Bearer header gets attached and
-        // auth.uid() resolves to the real UUID inside the RLS policy.
-        const auth = await ensureAuthenticated(supabase)
-        if (!auth.ok) return { ok: false, error: auth.error }
-        // Stamp created_by from the live session so the DB trigger
-        // doesn't have to (and so we never insert with a stale value).
-        const payload = { ...toServerPayload(input), created_by: auth.userId }
-
-        const { data, error } = await withTimeout(
-          supabase
-            .from('research_projects')
-            .insert(payload)
-            .select('*')
-            .single(),
-          15_000,
-          'createResearch',
-        )
-        if (error) {
-          console.error('[createResearch] Supabase error:', error)
-          return { ok: false, error: error.message || 'Insert failed' }
-        }
-        if (!data) {
-          console.warn('[createResearch] insert OK but no row returned (RLS on SELECT?)')
-        }
-        notifyRefresh()
-        return { ok: true, row: data as ResearchProject }
-      } catch (e) {
-        console.error('[createResearch] threw:', e)
-        return { ok: false, error: (e as Error).message || 'Network error' }
-      }
+  const supabase = createClient()
+  try {
+    const auth = await ensureAuthenticated(supabase)
+    if (!auth.ok) return { ok: false, error: auth.error }
+    const payload = { ...toServerPayload(input), created_by: auth.userId }
+    const { data, error } = await withTimeout(
+      supabase
+        .from('research_projects')
+        .insert(payload)
+        .select('*')
+        .single(),
+      15_000,
+      'createResearch',
+    )
+    if (error) {
+      console.error('[createResearch] Supabase error:', error)
+      return { ok: false, error: error.message || 'فشل الحفظ.' }
     }
+    notifyRefresh()
+    return { ok: true, row: data as ResearchProject }
+  } catch (e) {
+    console.error('[createResearch] threw:', e)
+    return { ok: false, error: (e as Error).message || 'خطأ في الشبكة.' }
   }
-
-  // -------- Demo / localStorage path --------
-  const row = buildResearchRow(input)
-  const existing = loadLocalResearch()
-  saveLocalResearch([row, ...existing])
-  notifyRefresh()
-  return { ok: true, row }
 }
 
-/** Patch a research row. Send only the fields you want changed. */
 export async function updateResearch(
   id: string,
   patch: Partial<ResearchInput>,
 ): Promise<CreateResult<ResearchProject>> {
-  if (!isDemoMode) {
-    const supabase = createClient()
-    if (supabase) {
-      try {
-        const auth = await ensureAuthenticated(supabase)
-        if (!auth.ok) return { ok: false, error: auth.error }
+  const supabase = createClient()
+  try {
+    const auth = await ensureAuthenticated(supabase)
+    if (!auth.ok) return { ok: false, error: auth.error }
 
-        const fullInput: ResearchInput = { title: '', ...patch }
-        const fullPayload = toServerPayload(fullInput)
-        const payload: Record<string, unknown> = {}
-        for (const k of Object.keys(patch)) {
-          if (k in fullPayload) payload[k] = (fullPayload as Record<string, unknown>)[k]
-        }
-        payload.updated_at = new Date().toISOString()
-        payload.updated_by = auth.userId
-
-        const { data, error } = await withTimeout(
-          supabase
-            .from('research_projects')
-            .update(payload)
-            .eq('id', id)
-            .select('*')
-            .single(),
-          15_000,
-          'updateResearch',
-        )
-        if (error) {
-          console.error('[updateResearch] Supabase error:', error)
-          return { ok: false, error: error.message || 'Update failed' }
-        }
-        notifyRefresh()
-        return { ok: true, row: data as ResearchProject }
-      } catch (e) {
-        console.error('[updateResearch] threw:', e)
-        return { ok: false, error: (e as Error).message || 'Network error' }
-      }
+    const fullInput: ResearchInput = { title: '', ...patch }
+    const fullPayload = toServerPayload(fullInput)
+    const payload: Record<string, unknown> = {}
+    for (const k of Object.keys(patch)) {
+      if (k in fullPayload) payload[k] = (fullPayload as Record<string, unknown>)[k]
     }
-  }
+    payload.updated_at = new Date().toISOString()
+    payload.updated_by = auth.userId
 
-  // Demo path
-  const list = loadLocalResearch()
-  const idx = list.findIndex(r => r.id === id)
-  if (idx < 0) return { ok: false, error: 'Row not found' }
-  const next = { ...list[idx], ...patch, updated_at: new Date().toISOString() } as ResearchProject
-  list[idx] = next
-  saveLocalResearch(list)
-  notifyRefresh()
-  return { ok: true, row: next }
+    const { data, error } = await withTimeout(
+      supabase
+        .from('research_projects')
+        .update(payload)
+        .eq('id', id)
+        .select('*')
+        .single(),
+      15_000,
+      'updateResearch',
+    )
+    if (error) {
+      console.error('[updateResearch] Supabase error:', error)
+      return { ok: false, error: error.message || 'فشل التحديث.' }
+    }
+    notifyRefresh()
+    return { ok: true, row: data as ResearchProject }
+  } catch (e) {
+    console.error('[updateResearch] threw:', e)
+    return { ok: false, error: (e as Error).message || 'خطأ في الشبكة.' }
+  }
 }
 
-/** Delete a research row by id. */
 export async function deleteResearch(
   id: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!isDemoMode) {
-    const supabase = createClient()
-    if (supabase) {
-      try {
-        const auth = await ensureAuthenticated(supabase)
-        if (!auth.ok) return { ok: false, error: auth.error }
-
-        const { error } = await withTimeout(
-          supabase.from('research_projects').delete().eq('id', id),
-          15_000,
-          'deleteResearch',
-        )
-        if (error) {
-          console.error('[deleteResearch] Supabase error:', error)
-          return { ok: false, error: error.message || 'Delete failed' }
-        }
-        notifyRefresh()
-        return { ok: true }
-      } catch (e) {
-        console.error('[deleteResearch] threw:', e)
-        return { ok: false, error: (e as Error).message || 'Network error' }
-      }
+  const supabase = createClient()
+  try {
+    const auth = await ensureAuthenticated(supabase)
+    if (!auth.ok) return { ok: false, error: auth.error }
+    const { error } = await withTimeout(
+      supabase.from('research_projects').delete().eq('id', id),
+      15_000,
+      'deleteResearch',
+    )
+    if (error) {
+      console.error('[deleteResearch] Supabase error:', error)
+      return { ok: false, error: error.message || 'فشل الحذف.' }
     }
+    notifyRefresh()
+    return { ok: true }
+  } catch (e) {
+    console.error('[deleteResearch] threw:', e)
+    return { ok: false, error: (e as Error).message || 'خطأ في الشبكة.' }
   }
-  // Demo path
-  saveLocalResearch(loadLocalResearch().filter(r => r.id !== id))
-  notifyRefresh()
-  return { ok: true }
 }
 
 export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkResult> {
   const result: BulkResult = { ok: 0, failed: 0, rows: [], errors: [] }
-
-  // -------- Supabase path: one batched insert --------
-  if (!isDemoMode) {
-    const supabase = createClient()
-    if (supabase) {
-      try {
-        const valid = inputs.filter(i => i.title && i.title.trim())
-        const skipped = inputs.length - valid.length
-        for (let i = 0; i < inputs.length; i++) {
-          if (!inputs[i].title?.trim()) {
-            result.failed++
-            result.errors.push({ row: i + 2, error: 'Missing title', title: inputs[i].title })
-          }
-        }
-        if (valid.length === 0) return result
-
-        const auth = await ensureAuthenticated(supabase)
-        if (!auth.ok) {
-          result.failed += valid.length
-          result.errors.push({ row: 0, error: auth.error })
-          return result
-        }
-
-        const { data, error } = await withTimeout(
-          supabase
-            .from('research_projects')
-            .insert(valid.map(v => ({ ...toServerPayload(v), created_by: auth.userId })))
-            .select('*'),
-          30_000,
-          'createResearchBulk',
-        )
-        if (error) {
-          console.error('[createResearchBulk] Supabase error:', error)
-          result.failed += valid.length
-          result.errors.push({ row: 0, error: error.message })
-          return result
-        }
-        result.ok = (data?.length ?? 0)
-        result.rows = (data ?? []) as ResearchProject[]
-        result.failed += skipped
-        notifyRefresh()
-        return result
-      } catch (e) {
-        console.error('[createResearchBulk] threw:', e)
-        result.failed = inputs.length
-        result.errors.push({ row: 0, error: (e as Error).message || 'Network error' })
-        return result
+  const supabase = createClient()
+  try {
+    const valid: ResearchInput[] = []
+    inputs.forEach((input, i) => {
+      if (input.title?.trim()) valid.push(input)
+      else {
+        result.failed++
+        result.errors.push({ row: i + 2, error: 'عنوان مفقود', title: input.title })
       }
-    }
-  }
+    })
+    if (valid.length === 0) return result
 
-  // -------- Demo path: append each in turn --------
-  const builtRows: ResearchProject[] = []
-  inputs.forEach((input, idx) => {
-    if (!input.title?.trim()) {
-      result.failed++
-      result.errors.push({ row: idx + 2, error: 'Missing title', title: input.title })
-      return
+    const auth = await ensureAuthenticated(supabase)
+    if (!auth.ok) {
+      result.failed += valid.length
+      result.errors.push({ row: 0, error: auth.error })
+      return result
     }
-    builtRows.push(buildResearchRow(input))
-    result.ok++
-  })
-  if (builtRows.length) {
-    const existing = loadLocalResearch()
-    saveLocalResearch([...builtRows, ...existing])
-    result.rows = builtRows
+
+    const { data, error } = await withTimeout(
+      supabase
+        .from('research_projects')
+        .insert(valid.map(v => ({ ...toServerPayload(v), created_by: auth.userId })))
+        .select('*'),
+      30_000,
+      'createResearchBulk',
+    )
+    if (error) {
+      console.error('[createResearchBulk] Supabase error:', error)
+      result.failed += valid.length
+      result.errors.push({ row: 0, error: error.message })
+      return result
+    }
+    result.ok = (data?.length ?? 0)
+    result.rows = (data ?? []) as ResearchProject[]
     notifyRefresh()
+    return result
+  } catch (e) {
+    console.error('[createResearchBulk] threw:', e)
+    result.failed = inputs.length
+    result.errors.push({ row: 0, error: (e as Error).message || 'خطأ في الشبكة.' })
+    return result
   }
-  return result
 }
 
 // ============================================================
@@ -756,7 +534,7 @@ export type DataResult<T> = {
  *
  *   const { data, loading, error, refetch } = useDataSource(
  *     () => fetchResearch({ status: 'active' }),
- *     ['active'],  // dependency tuple — refetches when these change
+ *     ['active'],
  *   )
  */
 export function useDataSource<T>(
@@ -783,9 +561,7 @@ export function useDataSource<T>(
 
   useEffect(() => { void load() }, [load])
 
-  // Subscribe to the global refresh signal — any successful mutation
-  // (createResearch, updateResearch, deleteResearch, createResearchBulk)
-  // pings every active hook, which refetches and re-renders the UI.
+  // Refresh on any global mutation signal.
   useEffect(() => subscribeRefresh(() => { void load() }), [load])
 
   return { data, loading, error, refetch: load }
@@ -796,8 +572,6 @@ export function useDepartments() {
   return useDataSource<Department[]>(fetchDepartments)
 }
 export function useResearch(opts: ResearchQuery = {}) {
-  // Stable dependency tuple — JSON-stringifying keeps the hook happy with
-  // object-typed options without forcing callers to memoize at the call site.
   const depKey = JSON.stringify(opts)
   return useDataSource<ResearchProject[]>(() => fetchResearch(opts), [depKey])
 }

@@ -39,8 +39,9 @@ import {
   GraduationCap, UserRound, BookMarked, Presentation, Cloud,
 } from 'lucide-react'
 import { useAuthStore } from '@/lib/auth-store'
+import { canManageUsers, isAdmin } from '@/lib/permissions'
 import { cn, getInitials } from '@/lib/utils'
-import { ROLE_LABELS } from '@/types'
+import { ROLE_LABELS, type UserRole } from '@/types'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 
@@ -81,7 +82,9 @@ const NAV_ITEMS = [
     group: 'Management',
     items: [
       { label: 'Departments',    href: '/departments',    icon: Building2 },
-      { label: 'Users & Roles',  href: '/users',          icon: Users },
+      // Users & Roles is super_admin-only — same rule the page itself enforces
+      // and the same rule enforced server-side by the profiles RLS policies.
+      { label: 'Users & Roles',  href: '/users',          icon: Users, requiresSuperAdmin: true },
       { label: 'Notifications',  href: '/notifications',  icon: Bell, badge: true },
       { label: 'Activity Logs',  href: '/activity-logs',  icon: ScrollText },
       { label: 'File Storage',   href: '/storage',        icon: HardDrive },
@@ -91,13 +94,25 @@ const NAV_ITEMS = [
   {
     group: 'System',
     items: [
-      { label: 'Admin Panel',        href: '/admin',    icon: ShieldCheck },
+      // Admin Panel is admin OR super_admin.
+      { label: 'Admin Panel',        href: '/admin',    icon: ShieldCheck, requiresAdmin: true },
       { label: 'Settings',           href: '/settings', icon: Settings },
-      { label: 'Backup Management',  href: '/backup',   icon: DatabaseBackup },
+      { label: 'Backup Management',  href: '/backup',   icon: DatabaseBackup, requiresSuperAdmin: true },
       { label: 'Public Portal',      href: '/visitor',  icon: Globe, external: true },
     ],
   },
 ]
+
+/** Drop nav entries the current role can't reach. Server-side RLS is the
+ *  real boundary — this just keeps the sidebar honest. */
+function visibleItems(items: typeof NAV_ITEMS[number]['items'], role?: UserRole | null) {
+  return items.filter(item => {
+    const it = item as { requiresSuperAdmin?: boolean; requiresAdmin?: boolean }
+    if (it.requiresSuperAdmin && !canManageUsers(role)) return false
+    if (it.requiresAdmin && !isAdmin(role)) return false
+    return true
+  })
+}
 
 interface SidebarProps {
   collapsed: boolean
@@ -167,7 +182,10 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
 
       {/* Navigation */}
       <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-1 scrollbar-hide">
-        {NAV_ITEMS.map(group => (
+        {NAV_ITEMS.map(group => {
+          const items = visibleItems(group.items, user?.role)
+          if (items.length === 0) return null
+          return (
           <div key={group.group}>
             {!collapsed && (
               <button
@@ -192,7 +210,7 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
                   exit={!collapsed ? { opacity: 0, height: 0 } : undefined}
                   className="space-y-0.5"
                 >
-                  {group.items.map(item => {
+                  {items.map(item => {
                     const isActive = pathname === item.href || pathname.startsWith(item.href + '/')
                     const Icon = item.icon
 
@@ -239,7 +257,8 @@ export function Sidebar({ collapsed, onToggle, mobileOpen, onMobileClose }: Side
               )}
             </AnimatePresence>
           </div>
-        ))}
+          )
+        })}
       </nav>
 
       {/* User profile */}

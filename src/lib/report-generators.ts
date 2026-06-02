@@ -13,9 +13,13 @@
 
 import {
   DEMO_DEPARTMENTS, DEMO_RESEARCH, DEMO_STATS, DEMO_USERS,
-  MONTHLY_RESEARCH_DATA,
 } from './demo-data'
 import { ROLE_LABELS, WORKFLOW_STAGES } from '@/types'
+
+// The monthly-research seed array used to live in demo-data.ts and was
+// removed alongside every other DEMO_* seed. Reports that needed it now
+// render an empty trend table rather than fabricating numbers.
+const MONTHLY_RESEARCH_DATA: { month: string; new: number; completed: number; published: number }[] = []
 
 // ============================================================
 // Public types

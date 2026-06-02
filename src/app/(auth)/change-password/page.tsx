@@ -120,7 +120,12 @@ function passwordStrength(pw: string): { score: 0|1|2|3|4; label: keyof (typeof 
 
 export default function ChangePasswordPage() {
   const router = useRouter()
-  const { user, isAuthenticated, mustChangePassword, clearMustChangePassword, logout } = useAuthStore()
+  const { user, isAuthenticated, logout } = useAuthStore()
+  // The forced-on-first-login flow was retired (password is now fixed).
+  // Keep the page around for voluntary changes, but the "must change" banner
+  // is always off.
+  const mustChangePassword = false
+  const clearMustChangePassword = () => {/* no-op */}
 
   const [lang, setLang] = useState<Lang>('en')
   useEffect(() => { setLang(readLangCookie()) }, [])
