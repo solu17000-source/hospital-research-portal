@@ -253,7 +253,9 @@ function loadUsers(): ExtendedProfile[] {
     employee_id: u.id.toUpperCase(),
     job_title: u.role === 'admin' ? 'Research Unit Director' : 'Research Coordinator',
     account_status: u.is_active ? 'active' : 'inactive',
-    must_change_password: u.login_count === 0,
+    // Force-change-on-first-login was removed from the login flow — keep the
+    // seed default at false so the admin UI checkbox reflects reality.
+    must_change_password: false,
   }))
 }
 

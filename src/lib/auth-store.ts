@@ -47,9 +47,11 @@ interface AuthState {
 // are never seen by the client. The demo list below is only used while
 // NEXT_PUBLIC_DEMO_MODE=true to power local previews without a backend.
 //
-// `ASas123456ASas` is the spec's initial setup password for BOTH Sultan
-// Alallah (Super Admin) and Afnan Bakri (Admin). Both must change it on
-// first login (the `mustChangePassword` flag is gated by login_count === 0).
+// `ASas123456ASas` is the fixed login password for Sultan Alallah (Super
+// Admin) and Afnan Bakri (Admin). The first-login force-change flow was
+// removed per the operator's request — `mustChangePassword` always resolves
+// to `false`, so login never bounces to `/change-password`. Users can still
+// visit that route voluntarily to update their password.
 const DEMO_PASSWORDS: Record<string, string[]> = {
   // Super Admin — Sultan Alallah
   'sultan.alallah':     ['ASas123456ASas', 'PMNH@Research2024!', 'admin123', 'demo'],
@@ -100,15 +102,15 @@ export const useAuthStore = create<AuthState>()(
               set({ isLoading: false })
               return { success: false, error: 'Invalid username or password.', errorCode: 'invalid_credentials' }
             }
-            const mustChange = demoUser.login_count === 0
+            // Force-change-on-first-login was removed. Always allow straight access.
             set({
               user: demoUser,
               isAuthenticated: true,
               isLoading: false,
-              mustChangePassword: mustChange,
+              mustChangePassword: false,
               lastIdentifier: opts?.remember ? ident : null,
             })
-            return { success: true, mustChangePassword: mustChange, user: demoUser }
+            return { success: true, mustChangePassword: false, user: demoUser }
           }
 
           // -------- SUPABASE PATH --------
@@ -212,8 +214,9 @@ export const useAuthStore = create<AuthState>()(
             return { success: false, error: 'Account temporarily locked.', errorCode: 'account_locked' }
           }
 
-          // First login (login_count === 0) forces a password change.
-          const mustChange = (profile.login_count ?? 0) === 0
+          // Force-change-on-first-login was removed: the password is fixed
+          // and there is no temporary credential to swap. `mustChangePassword`
+          // stays false so the user goes straight to the dashboard.
 
           // Best-effort bookkeeping; don't fail login if this update fails.
           supabase
@@ -230,10 +233,10 @@ export const useAuthStore = create<AuthState>()(
             user: profile,
             isAuthenticated: true,
             isLoading: false,
-            mustChangePassword: mustChange,
+            mustChangePassword: false,
             lastIdentifier: opts?.remember ? ident : null,
           })
-          return { success: true, mustChangePassword: mustChange, user: profile }
+          return { success: true, mustChangePassword: false, user: profile }
         } catch {
           set({ isLoading: false })
           return { success: false, error: 'Network error. Please try again.', errorCode: 'network' }
@@ -265,7 +268,7 @@ export const useAuthStore = create<AuthState>()(
 
           const { data: { session } } = await supabase.auth.getSession()
           if (!session?.user) {
-            set({ user: null, isAuthenticated: false })
+            set({ user: null, isAuthenticated: false, mustChangePassword: false })
             return
           }
           const { data: profile } = await supabase
@@ -274,10 +277,13 @@ export const useAuthStore = create<AuthState>()(
             .eq('id', session.user.id)
             .maybeSingle()
           if (profile?.is_active) {
-            set({ user: profile as Profile, isAuthenticated: true })
+            // Always clear `mustChangePassword` on hydrate so any stale `true`
+            // value left in localStorage from the removed force-change flow
+            // can't bounce the user to /change-password on refresh.
+            set({ user: profile as Profile, isAuthenticated: true, mustChangePassword: false })
           } else {
             await supabase.auth.signOut()
-            set({ user: null, isAuthenticated: false })
+            set({ user: null, isAuthenticated: false, mustChangePassword: false })
           }
         } catch (e) {
           // Visible in DevTools — silent failures here were the root of the

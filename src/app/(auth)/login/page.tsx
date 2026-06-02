@@ -112,7 +112,7 @@ export default function LoginPage() {
   const params = useSearchParams()
   const redirectTo = params.get('redirect') || '/dashboard'
 
-  const { login, isAuthenticated, isLoading, lastIdentifier, mustChangePassword } = useAuthStore()
+  const { login, isAuthenticated, isLoading, lastIdentifier } = useAuthStore()
 
   const [lang, setLang] = useState<Lang>('en')
   const [identifier, setIdentifier] = useState('')
@@ -135,13 +135,12 @@ export default function LoginPage() {
     if (typeof document !== 'undefined') document.documentElement.lang = lang
   }, [lang])
 
-  // If user is already signed in, send them on.
+  // If user is already signed in, send them straight to their target.
+  // The first-login "must change password" redirect was removed — the
+  // password is now a fixed value and there's no temporary credential to swap.
   useEffect(() => {
-    if (isAuthenticated) {
-      if (mustChangePassword) router.replace('/change-password')
-      else router.replace(redirectTo)
-    }
-  }, [isAuthenticated, mustChangePassword, redirectTo, router])
+    if (isAuthenticated) router.replace(redirectTo)
+  }, [isAuthenticated, redirectTo, router])
 
   const t = T[lang]
   const isRtl = lang === 'ar'
@@ -163,12 +162,9 @@ export default function LoginPage() {
       document.cookie = 'pmnh-visitor=; path=/; max-age=0'
       const name = (result.user?.full_name || identifier).split(' ')[0]
       toast.success(format(t.welcomeBack, { name }))
-      if (result.mustChangePassword) {
-        toast(t.firstLoginNotice, { icon: '🔒' })
-        startTransition(() => router.replace('/change-password'))
-      } else {
-        startTransition(() => router.replace(redirectTo))
-      }
+      // First-login force-change-password flow was removed — go straight to
+      // the requested page (defaults to /dashboard).
+      startTransition(() => router.replace(redirectTo))
       return
     }
     setErrorCode(result.errorCode ?? 'unknown')

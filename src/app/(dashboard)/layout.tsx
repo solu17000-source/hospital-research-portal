@@ -10,7 +10,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
   // on mount and subscribes to token-refresh / sign-out from other tabs so
   // hard-reloads after login keep the user authenticated correctly.
   useAuthHydrate()
-  const { isAuthenticated, isLoading, mustChangePassword } = useAuthStore()
+  const { isAuthenticated, isLoading } = useAuthStore()
   const router = useRouter()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -22,14 +22,11 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   useEffect(() => {
     if (!mounted || isLoading) return
-    if (!isAuthenticated) {
-      router.replace('/login')
-    } else if (mustChangePassword) {
-      // Authenticated but using a temporary password — force the change before
-      // exposing any dashboard module.
-      router.replace('/change-password')
-    }
-  }, [mounted, isAuthenticated, isLoading, mustChangePassword, router])
+    if (!isAuthenticated) router.replace('/login')
+    // Note: the previous `mustChangePassword` gate that bounced to
+    // /change-password was removed. The password is now a fixed value and
+    // there is no temporary credential to swap on first login.
+  }, [mounted, isAuthenticated, isLoading, router])
 
   if (!mounted || (!isAuthenticated && !isLoading)) {
     return (
