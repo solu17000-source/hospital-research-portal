@@ -116,7 +116,10 @@ function demoResearchMerged(): ResearchProject[] {
 export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchProject[]> {
   if (isDemoMode) return applyResearchFilters(demoResearchMerged(), opts)
   const supabase = createClient()
-  if (!supabase) return applyResearchFilters(demoResearchMerged(), opts)
+  if (!supabase) {
+    console.warn('[fetchResearch] No Supabase client — returning empty list.')
+    return []
+  }
   try {
     let q = supabase
       .from('research_projects')
@@ -128,9 +131,19 @@ export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchP
     if (opts.publicOnly)   q = q.eq('is_public', true)
     if (opts.limit)        q = q.limit(opts.limit)
     const { data, error } = await q
-    if (error || !data) return applyResearchFilters(demoResearchMerged(), opts)
-    return data as ResearchProject[]
-  } catch { return applyResearchFilters(demoResearchMerged(), opts) }
+    if (error) {
+      // Silently shimming in DEMO_RESEARCH used to hide real auth/RLS
+      // failures behind 8 ghost rows that looked authentic. Surface the
+      // error to the console + return [] so the UI shows the truthful
+      // empty state instead.
+      console.error('[fetchResearch] Supabase error:', error)
+      return []
+    }
+    return (data as ResearchProject[] | null) ?? []
+  } catch (e) {
+    console.error('[fetchResearch] threw:', e)
+    return []
+  }
 }
 function applyResearchFilters(list: ResearchProject[], opts: ResearchQuery): ResearchProject[] {
   let out = list.slice()
@@ -230,7 +243,10 @@ export async function fetchStats(): Promise<DashboardStats> {
     }
   }
   const supabase = createClient()
-  if (!supabase) return DEMO_STATS
+  if (!supabase) {
+    console.warn('[fetchStats] No Supabase client — returning zeroed stats.')
+    return EMPTY_STATS
+  }
   try {
     const [
       total, active, completed, delayed, published, pendingIrb, q1, q2, q3, q4, openAccess,
@@ -251,24 +267,53 @@ export async function fetchStats(): Promise<DashboardStats> {
       countWhere(supabase, 'profiles', { is_active: true }),
       countWhere(supabase, 'research_projects', { funding_source: { _not_null: true } }),
     ])
+    // Use zeroed stats as the base so we never quietly leak demo numbers
+    // into the production dashboard if one of the counts errors out.
     return {
-      ...DEMO_STATS,
-      total_projects: total ?? DEMO_STATS.total_projects,
-      active_projects: active ?? DEMO_STATS.active_projects,
-      completed_projects: completed ?? DEMO_STATS.completed_projects,
-      delayed_projects: delayed ?? DEMO_STATS.delayed_projects,
-      published_papers: published ?? DEMO_STATS.published_papers,
-      pending_irb: pendingIrb ?? DEMO_STATS.pending_irb,
-      q1_publications: q1 ?? DEMO_STATS.q1_publications,
-      q2_publications: q2 ?? DEMO_STATS.q2_publications,
-      q3_publications: q3 ?? DEMO_STATS.q3_publications,
-      q4_publications: q4 ?? DEMO_STATS.q4_publications,
-      open_access_count: openAccess ?? DEMO_STATS.open_access_count,
-      total_departments: totalDepartments ?? DEMO_STATS.total_departments,
-      total_users: totalUsers ?? DEMO_STATS.total_users,
-      funded_projects: fundedProjects ?? DEMO_STATS.funded_projects,
+      ...EMPTY_STATS,
+      total_projects: total ?? 0,
+      active_projects: active ?? 0,
+      completed_projects: completed ?? 0,
+      delayed_projects: delayed ?? 0,
+      published_papers: published ?? 0,
+      pending_irb: pendingIrb ?? 0,
+      q1_publications: q1 ?? 0,
+      q2_publications: q2 ?? 0,
+      q3_publications: q3 ?? 0,
+      q4_publications: q4 ?? 0,
+      open_access_count: openAccess ?? 0,
+      total_departments: totalDepartments ?? 0,
+      total_users: totalUsers ?? 0,
+      funded_projects: fundedProjects ?? 0,
     }
-  } catch { return DEMO_STATS }
+  } catch (e) {
+    console.error('[fetchStats] threw:', e)
+    return EMPTY_STATS
+  }
+}
+
+// Zeroed dashboard stats — used in production when Supabase can't be reached
+// or every count query errors. Keeps the dashboard truthful (visible zeros)
+// instead of silently displaying demo numbers that look real. Field set must
+// match the DashboardStats interface in types/index.ts exactly.
+const EMPTY_STATS: DashboardStats = {
+  total_projects: 0,
+  active_projects: 0,
+  completed_projects: 0,
+  published_papers: 0,
+  delayed_projects: 0,
+  pending_irb: 0,
+  upcoming_deadlines: 0,
+  total_departments: 0,
+  total_users: 0,
+  this_month_new: 0,
+  funded_projects: 0,
+  total_budget: 0,
+  q1_publications: 0,
+  q2_publications: 0,
+  q3_publications: 0,
+  q4_publications: 0,
+  open_access_count: 0,
 }
 
 /** Tiny helper — head-only count with an arbitrary equality filter set. */

@@ -11,16 +11,22 @@ import {
   Search, SlidersHorizontal, Users, X,
 } from 'lucide-react'
 
-import { deleteResearch, useResearch } from '@/lib/data-source'
-import { DEMO_DEPARTMENTS, DEMO_RESEARCH } from '@/lib/demo-data'
+import { deleteResearch, useDepartments, useResearch } from '@/lib/data-source'
 import { isDemoMode } from '@/lib/supabase'
 import {
   cn, formatDate, getPriorityClass, getStatusBadgeClass, truncate,
 } from '@/lib/utils'
 import {
-  WORKFLOW_STAGES, type PriorityLevel, type ResearchProject, type ResearchStatus,
-  type WorkflowStage,
+  WORKFLOW_STAGES, type Department, type PriorityLevel, type ResearchProject,
+  type ResearchStatus, type WorkflowStage,
 } from '@/types'
+
+// Stable empty seeds — keep the page's filter / pagination / summary code
+// honest when Supabase hasn't replied yet. We deliberately don't fall back
+// to DEMO_* in production: that used to mask real auth/RLS failures with
+// 8 ghost rows that looked legitimate while the live database had 16.
+const EMPTY_RESEARCH: ResearchProject[] = []
+const EMPTY_DEPARTMENTS: Department[] = []
 
 type Lang = 'en' | 'ar'
 type ViewMode = 'table' | 'cards'
@@ -177,8 +183,6 @@ function format(template: string, vars: Record<string, string | number>): string
   return template.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
 }
 
-const DEPT_BY_ID = new Map(DEMO_DEPARTMENTS.map(d => [d.id, d]))
-
 const STATUS_OPTIONS: { value: ResearchStatus | 'all'; key: keyof (typeof T)['en'] }[] = [
   { value: 'all', key: 'allStatus' },
   { value: 'active', key: 'statusActive' },
@@ -257,10 +261,20 @@ export default function ResearchPage() {
   const [exportMenu, setExportMenu] = useState(false)
   const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set())
 
-  // Live data via the data-source hook — merges Supabase rows with any
-  // user-created entries (demo mode) or the seed catalog (no Supabase).
-  const { data: researchData } = useResearch()
-  const researchList: ResearchProject[] = researchData ?? DEMO_RESEARCH
+  // Live data via the data-source hook. In production we resolve to an empty
+  // list while Supabase is still in-flight (and on hard error) rather than
+  // shimming in DEMO_RESEARCH — the demo seed has 8 rows and was making the
+  // page look like it only contained 8 of the real 16 records.
+  const { data: researchData, loading: researchLoading } = useResearch()
+  const researchList: ResearchProject[] = researchData ?? EMPTY_RESEARCH
+
+  // Live departments — used to draw the badge + populate the filter dropdown
+  // with real UUIDs that match what the rows actually reference. The old
+  // module-level `DEPT_BY_ID = DEMO_DEPARTMENTS` map silently returned
+  // undefined for every real row because the seed used short ids ("d1"...).
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? EMPTY_DEPARTMENTS
+  const DEPT_BY_ID = useMemo(() => new Map(departments.map(d => [d.id, d])), [departments])
 
   // Filter pipeline --------------------------------------------
   const filtered = useMemo(() => {
@@ -601,7 +615,7 @@ export default function ResearchPage() {
             className="form-input w-auto min-w-[160px]"
           >
             <option value="all">{t.allDepts}</option>
-            {DEMO_DEPARTMENTS.map(d => (
+            {departments.map(d => (
               <option key={d.id} value={d.id}>{d.name}</option>
             ))}
           </select>
@@ -717,9 +731,18 @@ export default function ResearchPage() {
       {/* ===== Results ===== */}
       {filtered.length === 0 ? (
         <div className="premium-card p-16 text-center">
-          <FlaskConical className="w-14 h-14 mx-auto mb-4 text-gray-300" />
-          <p className="font-semibold text-gray-700">{t.emptyTitle}</p>
-          <p className="text-sm text-gray-500 mt-1">{t.emptySub}</p>
+          {researchLoading ? (
+            <>
+              <div className="w-10 h-10 mx-auto mb-4 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin" />
+              <p className="font-semibold text-gray-700">{lang === 'ar' ? 'جاري تحميل السجلات…' : 'Loading records…'}</p>
+            </>
+          ) : (
+            <>
+              <FlaskConical className="w-14 h-14 mx-auto mb-4 text-gray-300" />
+              <p className="font-semibold text-gray-700">{t.emptyTitle}</p>
+              <p className="text-sm text-gray-500 mt-1">{t.emptySub}</p>
+            </>
+          )}
         </div>
       ) : viewMode === 'table' ? (
         <div className="premium-card overflow-hidden">
