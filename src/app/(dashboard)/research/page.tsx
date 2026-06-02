@@ -11,7 +11,7 @@ import {
   Search, SlidersHorizontal, Users, X,
 } from 'lucide-react'
 
-import { useResearch } from '@/lib/data-source'
+import { deleteResearch, useResearch } from '@/lib/data-source'
 import { DEMO_DEPARTMENTS, DEMO_RESEARCH } from '@/lib/demo-data'
 import { isDemoMode } from '@/lib/supabase'
 import {
@@ -372,13 +372,35 @@ export default function ResearchPage() {
     setExportMenu(false)
   }
 
-  function archive(id: string) {
-    setArchivedIds(prev => {
-      const next = new Set(prev)
-      next.add(id)
-      return next
-    })
-    toast(t.archived, { icon: '🗄️' })
+  /**
+   * Archive = real DELETE in Supabase when the row has a UUID id (i.e. it
+   * came from the database), local hide for the seed catalog otherwise.
+   * On a successful Supabase delete the refresh-signal in data-source
+   * fires and useResearch() re-fetches, so the row disappears from the
+   * list immediately — no manual reload needed.
+   */
+  async function archive(id: string) {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+    const isUuid = UUID_RE.test(id)
+    if (!confirm('Delete this research project? This cannot be undone.')) return
+
+    if (!isUuid) {
+      // Local seed row — just hide it.
+      setArchivedIds(prev => {
+        const next = new Set(prev); next.add(id); return next
+      })
+      toast(t.archived, { icon: '🗄️' })
+      return
+    }
+
+    const result = await deleteResearch(id)
+    if (!result.ok) {
+      toast.error(`Could not delete: ${result.error}`)
+      return
+    }
+    toast.success('Research project deleted.')
+    // useResearch() already refetched via the refresh signal — the row
+    // is gone from the list. No need to touch archivedIds.
   }
 
   // ---------- helpers used in rendering ----------

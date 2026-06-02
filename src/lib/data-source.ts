@@ -292,6 +292,37 @@ async function countWhere(
 }
 
 // ============================================================
+// Refresh signal — pinged by every successful mutation so every
+// active `useDataSource` hook refetches and the UI updates instantly
+// without manual reload.
+// ============================================================
+const refreshSubscribers = new Set<() => void>()
+export function subscribeRefresh(cb: () => void): () => void {
+  refreshSubscribers.add(cb)
+  return () => { refreshSubscribers.delete(cb) }
+}
+function notifyRefresh(): void {
+  refreshSubscribers.forEach(cb => {
+    try { cb() } catch { /* ignore */ }
+  })
+}
+
+// ============================================================
+// Race utility — bounds every Supabase call by `ms` so a hung fetch
+// (DNS hiccup, dropped websocket) can't leave the UI's "Saving…"
+// state stuck forever.
+// ============================================================
+function withTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
+    Promise.resolve(p).then(
+      v => { clearTimeout(timer); resolve(v) },
+      e => { clearTimeout(timer); reject(e) },
+    )
+  })
+}
+
+// ============================================================
 // Writes (research)
 // ============================================================
 
@@ -426,14 +457,28 @@ export async function createResearch(input: ResearchInput): Promise<CreateResult
     const supabase = createClient()
     if (supabase) {
       try {
-        const { data, error } = await supabase
-          .from('research_projects')
-          .insert(toServerPayload(input))
-          .select('*')
-          .single()
-        if (error || !data) return { ok: false, error: error?.message || 'Insert failed' }
+        const { data, error } = await withTimeout(
+          supabase
+            .from('research_projects')
+            .insert(toServerPayload(input))
+            .select('*')
+            .single(),
+          15_000,
+          'createResearch',
+        )
+        if (error) {
+          console.error('[createResearch] Supabase error:', error)
+          return { ok: false, error: error.message || 'Insert failed' }
+        }
+        if (!data) {
+          // Insert succeeded but the .select() returned nothing — almost
+          // always an RLS read-back issue. Treat as success-without-row.
+          console.warn('[createResearch] insert OK but no row returned (RLS on SELECT?)')
+        }
+        notifyRefresh()
         return { ok: true, row: data as ResearchProject }
       } catch (e) {
+        console.error('[createResearch] threw:', e)
         return { ok: false, error: (e as Error).message || 'Network error' }
       }
     }
@@ -443,7 +488,92 @@ export async function createResearch(input: ResearchInput): Promise<CreateResult
   const row = buildResearchRow(input)
   const existing = loadLocalResearch()
   saveLocalResearch([row, ...existing])
+  notifyRefresh()
   return { ok: true, row }
+}
+
+/** Patch a research row. Send only the fields you want changed. */
+export async function updateResearch(
+  id: string,
+  patch: Partial<ResearchInput>,
+): Promise<CreateResult<ResearchProject>> {
+  if (!isDemoMode) {
+    const supabase = createClient()
+    if (supabase) {
+      try {
+        // Build a payload from the patch — same field cleanup rules as
+        // toServerPayload, applied to only the keys present.
+        const fullInput: ResearchInput = { title: '', ...patch }
+        const fullPayload = toServerPayload(fullInput)
+        const payload: Record<string, unknown> = {}
+        for (const k of Object.keys(patch)) {
+          if (k in fullPayload) payload[k] = (fullPayload as Record<string, unknown>)[k]
+        }
+        payload.updated_at = new Date().toISOString()
+
+        const { data, error } = await withTimeout(
+          supabase
+            .from('research_projects')
+            .update(payload)
+            .eq('id', id)
+            .select('*')
+            .single(),
+          15_000,
+          'updateResearch',
+        )
+        if (error) {
+          console.error('[updateResearch] Supabase error:', error)
+          return { ok: false, error: error.message || 'Update failed' }
+        }
+        notifyRefresh()
+        return { ok: true, row: data as ResearchProject }
+      } catch (e) {
+        console.error('[updateResearch] threw:', e)
+        return { ok: false, error: (e as Error).message || 'Network error' }
+      }
+    }
+  }
+
+  // Demo path
+  const list = loadLocalResearch()
+  const idx = list.findIndex(r => r.id === id)
+  if (idx < 0) return { ok: false, error: 'Row not found' }
+  const next = { ...list[idx], ...patch, updated_at: new Date().toISOString() } as ResearchProject
+  list[idx] = next
+  saveLocalResearch(list)
+  notifyRefresh()
+  return { ok: true, row: next }
+}
+
+/** Delete a research row by id. */
+export async function deleteResearch(
+  id: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!isDemoMode) {
+    const supabase = createClient()
+    if (supabase) {
+      try {
+        const { error } = await withTimeout(
+          supabase.from('research_projects').delete().eq('id', id),
+          15_000,
+          'deleteResearch',
+        )
+        if (error) {
+          console.error('[deleteResearch] Supabase error:', error)
+          return { ok: false, error: error.message || 'Delete failed' }
+        }
+        notifyRefresh()
+        return { ok: true }
+      } catch (e) {
+        console.error('[deleteResearch] threw:', e)
+        return { ok: false, error: (e as Error).message || 'Network error' }
+      }
+    }
+  }
+  // Demo path
+  saveLocalResearch(loadLocalResearch().filter(r => r.id !== id))
+  notifyRefresh()
+  return { ok: true }
 }
 
 export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkResult> {
@@ -463,11 +593,16 @@ export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkR
           }
         }
         if (valid.length === 0) return result
-        const { data, error } = await supabase
-          .from('research_projects')
-          .insert(valid.map(toServerPayload))
-          .select('*')
+        const { data, error } = await withTimeout(
+          supabase
+            .from('research_projects')
+            .insert(valid.map(toServerPayload))
+            .select('*'),
+          30_000,
+          'createResearchBulk',
+        )
         if (error) {
+          console.error('[createResearchBulk] Supabase error:', error)
           result.failed += valid.length
           result.errors.push({ row: 0, error: error.message })
           return result
@@ -475,8 +610,10 @@ export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkR
         result.ok = (data?.length ?? 0)
         result.rows = (data ?? []) as ResearchProject[]
         result.failed += skipped
+        notifyRefresh()
         return result
       } catch (e) {
+        console.error('[createResearchBulk] threw:', e)
         result.failed = inputs.length
         result.errors.push({ row: 0, error: (e as Error).message || 'Network error' })
         return result
@@ -499,6 +636,7 @@ export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkR
     const existing = loadLocalResearch()
     saveLocalResearch([...builtRows, ...existing])
     result.rows = builtRows
+    notifyRefresh()
   }
   return result
 }
@@ -546,6 +684,11 @@ export function useDataSource<T>(
   }, deps)
 
   useEffect(() => { void load() }, [load])
+
+  // Subscribe to the global refresh signal — any successful mutation
+  // (createResearch, updateResearch, deleteResearch, createResearchBulk)
+  // pings every active hook, which refetches and re-renders the UI.
+  useEffect(() => subscribeRefresh(() => { void load() }), [load])
 
   return { data, loading, error, refetch: load }
 }

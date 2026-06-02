@@ -253,6 +253,16 @@ export const useAuthStore = create<AuthState>()(
         const supabase = createClient()
         if (!supabase) return
         try {
+          // If a stale demo-mode session is sitting in localStorage (e.g.
+          // user.id is "u1" — not a UUID), the Supabase client would still
+          // think someone is signed in but every write to a UUID-typed
+          // column would silently fail RLS. Clear it up front.
+          const current = get().user
+          const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+          if (current && !UUID_RE.test(current.id)) {
+            set({ user: null, isAuthenticated: false, mustChangePassword: false })
+          }
+
           const { data: { session } } = await supabase.auth.getSession()
           if (!session?.user) {
             set({ user: null, isAuthenticated: false })
@@ -269,7 +279,11 @@ export const useAuthStore = create<AuthState>()(
             await supabase.auth.signOut()
             set({ user: null, isAuthenticated: false })
           }
-        } catch { /* ignore */ }
+        } catch (e) {
+          // Visible in DevTools — silent failures here were the root of the
+          // "page looks logged in but writes 403" symptom.
+          console.error('[auth-store.hydrate]', e)
+        }
       },
 
       updateProfile: (updates) => {
