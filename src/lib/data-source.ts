@@ -292,6 +292,39 @@ async function countWhere(
 }
 
 // ============================================================
+// Auth hydration — forces the supabase-js auth state into memory
+// from cookies BEFORE we make a write. Skipping this was the root
+// cause of `auth.uid()` coming back null inside RLS policies — the
+// supabase client had been created, the user had signed in elsewhere,
+// but the JWT lived in cookies (not in this client's memory), so the
+// Authorization: Bearer header was never attached to the request.
+// ============================================================
+async function ensureAuthenticated(
+  supabase: NonNullable<ReturnType<typeof createClient>>,
+): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
+  try {
+    const { data: { session }, error } = await supabase.auth.getSession()
+    if (error) {
+      console.error('[ensureAuthenticated] getSession error:', error)
+      return { ok: false, error: error.message }
+    }
+    if (!session?.user) {
+      // Try one explicit refresh in case the access token expired but the
+      // refresh token is still valid.
+      const { data: refreshed } = await supabase.auth.refreshSession()
+      if (!refreshed?.session?.user) {
+        return { ok: false, error: 'Not signed in — please log in again.' }
+      }
+      return { ok: true, userId: refreshed.session.user.id }
+    }
+    return { ok: true, userId: session.user.id }
+  } catch (e) {
+    console.error('[ensureAuthenticated] threw:', e)
+    return { ok: false, error: (e as Error).message }
+  }
+}
+
+// ============================================================
 // Refresh signal — pinged by every successful mutation so every
 // active `useDataSource` hook refetches and the UI updates instantly
 // without manual reload.
@@ -457,10 +490,19 @@ export async function createResearch(input: ResearchInput): Promise<CreateResult
     const supabase = createClient()
     if (supabase) {
       try {
+        // Force-hydrate the session into the client's memory before the
+        // insert so the Authorization: Bearer header gets attached and
+        // auth.uid() resolves to the real UUID inside the RLS policy.
+        const auth = await ensureAuthenticated(supabase)
+        if (!auth.ok) return { ok: false, error: auth.error }
+        // Stamp created_by from the live session so the DB trigger
+        // doesn't have to (and so we never insert with a stale value).
+        const payload = { ...toServerPayload(input), created_by: auth.userId }
+
         const { data, error } = await withTimeout(
           supabase
             .from('research_projects')
-            .insert(toServerPayload(input))
+            .insert(payload)
             .select('*')
             .single(),
           15_000,
@@ -471,8 +513,6 @@ export async function createResearch(input: ResearchInput): Promise<CreateResult
           return { ok: false, error: error.message || 'Insert failed' }
         }
         if (!data) {
-          // Insert succeeded but the .select() returned nothing — almost
-          // always an RLS read-back issue. Treat as success-without-row.
           console.warn('[createResearch] insert OK but no row returned (RLS on SELECT?)')
         }
         notifyRefresh()
@@ -501,8 +541,9 @@ export async function updateResearch(
     const supabase = createClient()
     if (supabase) {
       try {
-        // Build a payload from the patch — same field cleanup rules as
-        // toServerPayload, applied to only the keys present.
+        const auth = await ensureAuthenticated(supabase)
+        if (!auth.ok) return { ok: false, error: auth.error }
+
         const fullInput: ResearchInput = { title: '', ...patch }
         const fullPayload = toServerPayload(fullInput)
         const payload: Record<string, unknown> = {}
@@ -510,6 +551,7 @@ export async function updateResearch(
           if (k in fullPayload) payload[k] = (fullPayload as Record<string, unknown>)[k]
         }
         payload.updated_at = new Date().toISOString()
+        payload.updated_by = auth.userId
 
         const { data, error } = await withTimeout(
           supabase
@@ -553,6 +595,9 @@ export async function deleteResearch(
     const supabase = createClient()
     if (supabase) {
       try {
+        const auth = await ensureAuthenticated(supabase)
+        if (!auth.ok) return { ok: false, error: auth.error }
+
         const { error } = await withTimeout(
           supabase.from('research_projects').delete().eq('id', id),
           15_000,
@@ -593,10 +638,18 @@ export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkR
           }
         }
         if (valid.length === 0) return result
+
+        const auth = await ensureAuthenticated(supabase)
+        if (!auth.ok) {
+          result.failed += valid.length
+          result.errors.push({ row: 0, error: auth.error })
+          return result
+        }
+
         const { data, error } = await withTimeout(
           supabase
             .from('research_projects')
-            .insert(valid.map(toServerPayload))
+            .insert(valid.map(v => ({ ...toServerPayload(v), created_by: auth.userId })))
             .select('*'),
           30_000,
           'createResearchBulk',
