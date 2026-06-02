@@ -2,11 +2,9 @@
 import { useState, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import { BookOpen, ExternalLink, Search, Filter, Download, Star, Globe, TrendingUp, BarChart2 } from 'lucide-react'
-import { DEMO_RESEARCH } from '@/lib/demo-data'
+import { useResearch } from '@/lib/data-source'
 import { cn, formatDate, getStatusBadgeClass } from '@/lib/utils'
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts'
-
-const published = DEMO_RESEARCH.filter(r => r.publication_status === 'published')
 
 const QUARTILE_COLORS: Record<string, string> = {
   Q1: '#7c3aed', Q2: '#2563eb', Q3: '#0891b2', Q4: '#6b7280', not_indexed: '#e5e7eb'
@@ -17,6 +15,15 @@ export default function PublicationsPage() {
   const [quartileFilter, setQuartileFilter] = useState('all')
   const [dbFilter, setDbFilter] = useState('all')
 
+  // Pull every research row from Supabase, then filter to the ones that are
+  // actually published. When the live query is in flight we render zeros
+  // instead of fabricated demo numbers.
+  const { data: researchData } = useResearch()
+  const published = useMemo(
+    () => (researchData ?? []).filter(r => r.publication_status === 'published'),
+    [researchData],
+  )
+
   const filtered = useMemo(() => {
     return published.filter(r => {
       const q = search.toLowerCase()
@@ -25,21 +32,21 @@ export default function PublicationsPage() {
       const matchDb = dbFilter === 'all' || r.indexed_database === dbFilter
       return matchSearch && matchQ && matchDb
     })
-  }, [search, quartileFilter, dbFilter])
+  }, [published, search, quartileFilter, dbFilter])
 
-  const quartileCounts = {
+  const quartileCounts = useMemo(() => ({
     Q1: published.filter(r => r.journal_quartile === 'Q1').length,
     Q2: published.filter(r => r.journal_quartile === 'Q2').length,
     Q3: published.filter(r => r.journal_quartile === 'Q3').length,
     Q4: published.filter(r => r.journal_quartile === 'Q4').length,
-  }
+  }), [published])
 
-  const dbCounts = [
+  const dbCounts = useMemo(() => [
     { name: 'Scopus', value: published.filter(r => r.indexed_database === 'Scopus').length, color: '#2563eb' },
     { name: 'ISI', value: published.filter(r => r.indexed_database === 'ISI').length, color: '#7c3aed' },
     { name: 'PubMed', value: published.filter(r => r.indexed_database === 'PubMed').length, color: '#16a34a' },
     { name: 'Other', value: published.filter(r => r.indexed_database === 'Other').length, color: '#6b7280' },
-  ]
+  ], [published])
 
   return (
     <div className="space-y-5">

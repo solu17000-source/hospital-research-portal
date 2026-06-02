@@ -7,7 +7,6 @@ import HomePage, {
   type HomeStats,
 } from '@/components/home/HomePage'
 import { createPublicClient } from '@/lib/supabase-public'
-import { DEMO_DEPARTMENTS, DEMO_RESEARCH, DEMO_STATS } from '@/lib/demo-data'
 
 export const metadata: Metadata = {
   title: 'Health & Nursing Research Unit · PMNH Jazan',
@@ -37,47 +36,24 @@ type FetchResult = {
 async function fetchHomeData(): Promise<FetchResult> {
   const supabase = createPublicClient()
 
-  // ---- Demo fallback ----
-  const fallback: FetchResult = {
+  // Empty-state fallback. The portal is wired to Supabase as the single
+  // source of truth; if the public client can't be initialised (missing
+  // env vars), the landing page renders zeros instead of seed numbers.
+  const empty: FetchResult = {
     stats: {
-      active_projects: DEMO_STATS.active_projects,
-      published_papers: DEMO_STATS.published_papers,
-      total_departments: DEMO_STATS.total_departments,
-      q1_publications: DEMO_STATS.q1_publications,
-      open_access_count: DEMO_STATS.open_access_count,
-      total_users: DEMO_STATS.total_users,
+      active_projects: 0,
+      published_papers: 0,
+      total_departments: 0,
+      q1_publications: 0,
+      open_access_count: 0,
+      total_users: 0,
     },
-    featured: DEMO_RESEARCH
-      .filter(r => r.is_public || r.publication_status === 'published')
-      .slice(0, 6)
-      .map(r => ({
-        id: r.id,
-        research_id: r.research_id,
-        title: r.title,
-        title_ar: r.title_ar ?? null,
-        journal_name: r.journal_name ?? null,
-        publication_date: r.publication_date ?? null,
-        journal_quartile: r.journal_quartile ?? null,
-        is_open_access: r.is_open_access ?? null,
-        principal_investigator_name: r.principal_investigator_name ?? null,
-        department_id: r.department_id ?? null,
-      })),
-    departments: DEMO_DEPARTMENTS
-      .slice()
-      .sort((a, b) => b.research_count - a.research_count)
-      .slice(0, 12)
-      .map(d => ({
-        id: d.id,
-        name: d.name,
-        name_ar: d.name_ar ?? null,
-        code: d.code,
-        color: d.color,
-        research_count: d.research_count,
-      })),
+    featured: [],
+    departments: [],
     liveData: false,
   }
 
-  if (!supabase) return fallback
+  if (!supabase) return empty
 
   try {
     const [
@@ -115,21 +91,21 @@ async function fetchHomeData(): Promise<FetchResult> {
 
     return {
       stats: {
-        active_projects: activeProjects ?? fallback.stats.active_projects,
-        published_papers: publishedPapers ?? fallback.stats.published_papers,
-        total_departments: totalDepartments ?? fallback.stats.total_departments,
-        q1_publications: q1Publications ?? fallback.stats.q1_publications,
-        open_access_count: openAccess ?? fallback.stats.open_access_count,
-        total_users: totalUsers ?? fallback.stats.total_users,
+        active_projects: activeProjects ?? 0,
+        published_papers: publishedPapers ?? 0,
+        total_departments: totalDepartments ?? 0,
+        q1_publications: q1Publications ?? 0,
+        open_access_count: openAccess ?? 0,
+        total_users: totalUsers ?? 0,
       },
-      featured: (featuredRows ?? fallback.featured) as HomePublication[],
-      departments: (deptRows ?? fallback.departments) as HomeDepartment[],
+      featured: (featuredRows ?? []) as HomePublication[],
+      departments: (deptRows ?? []) as HomeDepartment[],
       liveData: true,
     }
   } catch {
-    // Network/schema issues — fall back transparently rather than blocking the
-    // public landing page.
-    return fallback
+    // Network/schema issues — surface zeros instead of blocking the public
+    // landing page or quietly substituting seed numbers.
+    return empty
   }
 }
 

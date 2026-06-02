@@ -11,8 +11,9 @@ import {
 } from 'lucide-react'
 
 import { useAuthStore } from '@/lib/auth-store'
-import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments } from '@/lib/data-source'
 import { cn, formatDate, getInitials, timeAgo } from '@/lib/utils'
+import type { Department } from '@/types'
 import { ROLE_LABELS } from '@/types'
 
 type Lang = 'en' | 'ar'
@@ -348,9 +349,11 @@ export default function ProfilePage() {
     setAvatar(user.avatar_url || undefined)
   }, [user?.id])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
   const department = useMemo(
-    () => (user?.department_id ? DEMO_DEPARTMENTS.find(d => d.id === user.department_id) : undefined),
-    [user?.department_id],
+    () => (user?.department_id ? departments.find(d => d.id === user.department_id) : undefined),
+    [user?.department_id, departments],
   )
 
   if (!user) {

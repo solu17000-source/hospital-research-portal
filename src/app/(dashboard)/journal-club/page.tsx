@@ -8,9 +8,10 @@ import {
   Sparkles, Trash2, Users, X,
 } from 'lucide-react'
 
-import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments } from '@/lib/data-source'
 import { useLang } from '@/lib/i18n'
 import { cn, formatDate } from '@/lib/utils'
+import type { Department } from '@/types'
 
 type SessionStatus = 'scheduled' | 'completed' | 'cancelled'
 
@@ -104,6 +105,8 @@ function seed(): JournalSession[] {
 
 export default function JournalClubPage() {
   const { isRtl, toggle, t } = useLang(DICT)
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
   const [items, setItems] = useState<JournalSession[]>([])
   useEffect(() => { setItems(load()) }, [])
   useEffect(() => { if (items.length) save(items) }, [items])
@@ -212,7 +215,7 @@ export default function JournalClubPage() {
         </div>
         <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} className="form-input w-auto min-w-[160px]">
           <option value="all">{t.allDepts}</option>
-          {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as SessionStatus | 'all')} className="form-input w-auto min-w-[140px]">
           <option value="all">{t.allStatus}</option>
@@ -238,7 +241,7 @@ export default function JournalClubPage() {
                   <p className="text-xs mt-1">{t.noneSub}</p>
                 </td></tr>
               ) : filtered.map(s => {
-                const dept = s.department_id ? DEMO_DEPARTMENTS.find(d => d.id === s.department_id) : undefined
+                const dept = s.department_id ? departments.find(d => d.id === s.department_id) : undefined
                 return (
                   <tr key={s.id}>
                     <td><span className="font-semibold text-sm text-gray-900">{s.title}</span></td>
@@ -275,17 +278,18 @@ export default function JournalClubPage() {
       </div>
 
       <AnimatePresence>
-        {modalOpen && <AddModal t={t} isRtl={isRtl} onClose={() => setModalOpen(false)} onSave={handleSave} />}
+        {modalOpen && <AddModal t={t} isRtl={isRtl} departments={departments} onClose={() => setModalOpen(false)} onSave={handleSave} />}
       </AnimatePresence>
     </div>
   )
 }
 
 function AddModal({
-  t, isRtl, onClose, onSave,
+  t, isRtl, departments, onClose, onSave,
 }: {
   t: Record<keyof typeof DICT.en, string>
   isRtl: boolean
+  departments: Department[]
   onClose: () => void
   onSave: (s: JournalSession) => void
 }) {
@@ -350,7 +354,7 @@ function AddModal({
               <Field label={t.fldDept}>
                 <select value={departmentId} onChange={e => setDepartmentId(e.target.value)} className="form-input">
                   <option value="">—</option>
-                  {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </Field>
               <Field label={t.fldDate}>

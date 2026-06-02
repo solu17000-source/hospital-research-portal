@@ -13,9 +13,10 @@ import {
   Upload, Users, X,
 } from 'lucide-react'
 
-import { DEMO_DEPARTMENTS, DEMO_RESEARCH } from '@/lib/demo-data'
+import { useDepartments } from '@/lib/data-source'
 import { mergeParticipants, type SyncParticipant, type SyncResult } from '@/lib/google-sync'
 import { cn, formatDate, timeAgo } from '@/lib/utils'
+import type { Department } from '@/types'
 
 // ---------------- Types ----------------
 
@@ -289,8 +290,6 @@ function format(template: string, vars: Record<string, string | number>): string
   return template.replace(/\{(\w+)\}/g, (_, k) => String(vars[k] ?? ''))
 }
 
-const DEPT_BY_ID = new Map(DEMO_DEPARTMENTS.map(d => [d.id, d]))
-
 const TYPE_LABEL_KEY: Record<QrType, keyof Translations> = {
   research: 'typeResearch',
   workshop: 'typeWorkshop',
@@ -374,67 +373,9 @@ function saveRecords(records: QrRecord[]) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(records)) } catch { /* ignore */ }
 }
 function seedRecords(): QrRecord[] {
-  // Seed with a handful of useful starting records pulled from demo research.
-  const today = new Date()
-  const inMonths = (m: number) => new Date(today.getFullYear(), today.getMonth() + m, today.getDate()).toISOString().slice(0, 10)
-  const seed: QrRecord[] = [
-    ...DEMO_RESEARCH.slice(0, 3).map((r, i): QrRecord => ({
-      id: `qr-seed-${r.id}`,
-      title: `Registration · ${r.title}`,
-      type: 'research',
-      related_label: r.research_id,
-      department_id: r.department_id,
-      registration_url: `https://pmnh-research.gov.sa/research/${r.id}`,
-      google_form_url: i === 0 ? 'https://forms.gle/pmnh-demo-form-1' : undefined,
-      google_sheet_url: i === 1 ? 'https://docs.google.com/spreadsheets/d/pmnh-demo-sheet-1' : undefined,
-      start_date: inMonths(-1),
-      end_date: inMonths(3),
-      visibility: 'internal',
-      scan_count: Math.floor(Math.random() * 40) + 5,
-      created_at: new Date(Date.now() - i * 86400000).toISOString(),
-    })),
-    {
-      id: 'qr-seed-workshop',
-      title: 'Research Methodology Workshop — June 2026',
-      type: 'workshop',
-      related_label: 'Methodology Workshop',
-      department_id: 'd14',
-      registration_url: 'https://forms.gle/pmnh-methodology-workshop',
-      google_form_url: 'https://forms.gle/pmnh-methodology-workshop',
-      google_sheet_url: 'https://docs.google.com/spreadsheets/d/pmnh-methodology-attendees',
-      start_date: inMonths(0),
-      end_date: inMonths(1),
-      visibility: 'public',
-      scan_count: 132,
-      created_at: new Date(Date.now() - 7 * 86400000).toISOString(),
-    },
-    {
-      id: 'qr-seed-journal-club',
-      title: 'Journal Club — Monthly Session',
-      type: 'journal_club',
-      related_label: 'Monthly JC',
-      department_id: 'd6',
-      google_form_url: 'https://forms.gle/pmnh-jc-attendance',
-      google_sheet_url: 'https://docs.google.com/spreadsheets/d/pmnh-jc-log',
-      start_date: inMonths(0),
-      end_date: inMonths(12),
-      visibility: 'internal',
-      scan_count: 41,
-      created_at: new Date(Date.now() - 2 * 86400000).toISOString(),
-    },
-    {
-      id: 'qr-seed-public',
-      title: 'Public Research Portal · Continue as Visitor',
-      type: 'public_registration',
-      related_label: 'Public portal',
-      registration_url: typeof window !== 'undefined' ? `${window.location.origin}/visitor` : 'https://pmnh-research.gov.sa/visitor',
-      visibility: 'public',
-      scan_count: 268,
-      start_date: inMonths(-6),
-      created_at: new Date(Date.now() - 30 * 86400000).toISOString(),
-    },
-  ]
-  return seed
+  // The QR records list starts empty — codes appear only after the user
+  // creates them through the New-QR modal. No seed.
+  return []
 }
 
 // ----------- Main page -----------
@@ -448,6 +389,12 @@ export default function QRCodesPage() {
   }, [lang])
   const t = T[lang] as Translations
   const isRtl = lang === 'ar'
+
+  // Live Supabase departments — powers the per-row badge lookup and the
+  // dropdown in the New-QR modal.
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
+  const DEPT_BY_ID = useMemo(() => new Map(departments.map(d => [d.id, d])), [departments])
 
   const [records, setRecords] = useState<QrRecord[]>([])
   useEffect(() => { setRecords(loadRecords()) }, [])
@@ -852,6 +799,7 @@ export default function QRCodesPage() {
               selected={selected}
               t={t}
               isRtl={isRtl}
+              deptById={DEPT_BY_ID}
               targetUrl={url}
               qrRef={qrSvgRef}
               onCopy={copyLink}
@@ -931,6 +879,7 @@ export default function QRCodesPage() {
           <NewQrModal
             t={t}
             isRtl={isRtl}
+            departments={departments}
             onClose={closeModal}
             onSave={handleSaveNewQr}
           />
@@ -943,13 +892,14 @@ export default function QRCodesPage() {
 // --------------- Detail subcomponent ---------------
 
 function QrDetail({
-  selected, t, isRtl, targetUrl, qrRef,
+  selected, t, isRtl, deptById, targetUrl, qrRef,
   onCopy, onDownloadSvg, onDownloadPng, onDelete,
   participants, syncEntry, syncing, onSync,
 }: {
   selected: QrRecord
   t: Translations
   isRtl: boolean
+  deptById: Map<string, Department>
   targetUrl: string
   qrRef: React.RefObject<HTMLDivElement>
   onCopy: () => void
@@ -964,7 +914,7 @@ function QrDetail({
   const TypeIcon = TYPE_ICON[selected.type]
   const tint = TYPE_COLOR[selected.type]
   const status = statusOf(selected)
-  const dept = selected.department_id ? DEPT_BY_ID.get(selected.department_id) : undefined
+  const dept = selected.department_id ? deptById.get(selected.department_id) : undefined
 
   const periodLabel = (() => {
     if (!selected.start_date && !selected.end_date) return t.activeNow
@@ -1242,10 +1192,11 @@ function VisibilityBadge({ v, t }: { v: QrVisibility; t: Translations }) {
 // --------------- New QR Modal ---------------
 
 function NewQrModal({
-  t, isRtl, onClose, onSave,
+  t, isRtl, departments, onClose, onSave,
 }: {
   t: Translations
   isRtl: boolean
+  departments: Department[]
   onClose: () => void
   onSave: (rec: QrRecord) => void
 }) {
@@ -1373,7 +1324,7 @@ function NewQrModal({
               <Field label={t.fldDept}>
                 <select value={departmentId} onChange={e => setDepartmentId(e.target.value)} className="form-input">
                   <option value="">—</option>
-                  {DEMO_DEPARTMENTS.map(d => (
+                  {departments.map(d => (
                     <option key={d.id} value={d.id}>{d.name}</option>
                   ))}
                 </select>

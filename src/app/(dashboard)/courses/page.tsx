@@ -10,9 +10,10 @@ import {
   Users, X,
 } from 'lucide-react'
 
-import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments } from '@/lib/data-source'
 import { format, useLang } from '@/lib/i18n'
 import { cn, formatDate } from '@/lib/utils'
+import type { Department } from '@/types'
 
 type CourseType = 'workshop' | 'training' | 'seminar' | 'short_course'
 type CourseStatus = 'scheduled' | 'in_progress' | 'completed' | 'cancelled'
@@ -151,6 +152,8 @@ function seed(): Course[] {
 
 export default function CoursesPage() {
   const { lang, isRtl, toggle, t } = useLang(DICT)
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
   const [items, setItems] = useState<Course[]>([])
   useEffect(() => { setItems(loadCourses()) }, [])
   useEffect(() => { if (items.length) saveCourses(items) }, [items])
@@ -276,7 +279,7 @@ export default function CoursesPage() {
         </select>
         <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} className="form-input w-auto min-w-[160px]">
           <option value="all">{t.allDepts}</option>
-          {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
       </div>
 
@@ -305,7 +308,7 @@ export default function CoursesPage() {
                   </td>
                 </tr>
               ) : filtered.map(c => {
-                const dept = c.department_id ? DEMO_DEPARTMENTS.find(d => d.id === c.department_id) : undefined
+                const dept = c.department_id ? departments.find(d => d.id === c.department_id) : undefined
                 return (
                   <tr key={c.id}>
                     <td>
@@ -380,19 +383,20 @@ export default function CoursesPage() {
       </div>
 
       <AnimatePresence>
-        {modalOpen && <AddModal t={t} isRtl={isRtl} onClose={() => setModalOpen(false)} onSave={handleSave} />}
+        {modalOpen && <AddModal t={t} isRtl={isRtl} departments={departments} onClose={() => setModalOpen(false)} onSave={handleSave} />}
       </AnimatePresence>
     </div>
   )
 }
 
 function AddModal({
-  t, isRtl, onClose, onSave,
+  t, isRtl, departments, onClose, onSave,
 }: {
   // Widened (non-literal) shape so the `useLang` return value can flow in
   // without the `as const` narrowing TS would otherwise apply.
   t: Record<keyof typeof DICT.en, string>
   isRtl: boolean
+  departments: Department[]
   onClose: () => void
   onSave: (c: Course) => void
 }) {
@@ -488,7 +492,7 @@ function AddModal({
               <Field label={t.fldDept}>
                 <select value={departmentId} onChange={e => setDepartmentId(e.target.value)} className="form-input">
                   <option value="">—</option>
-                  {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </Field>
               <Field label={t.fldCapacity}>

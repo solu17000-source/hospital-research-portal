@@ -12,9 +12,10 @@ import {
 } from 'lucide-react'
 
 import { useAuthStore } from '@/lib/auth-store'
-import { DEMO_DEPARTMENTS, DEMO_USERS } from '@/lib/demo-data'
+import { useDepartments, useUsers } from '@/lib/data-source'
 import { canManageUsers } from '@/lib/permissions'
 import { cn, formatDate, getInitials, timeAgo } from '@/lib/utils'
+import type { Department } from '@/types'
 import { ROLE_LABELS, type Profile, type UserRole } from '@/types'
 
 type Lang = 'en' | 'ar'
@@ -242,21 +243,26 @@ const AUDIT_KEY = 'pmnh-user-audit-v1'
 type AuditEntry = { id: string; at: string; actor: string; action: string; subject: string; details?: string }
 
 function loadUsers(): ExtendedProfile[] {
+  // localStorage cache survives a refresh while the Supabase query is in
+  // flight. The component overwrites this with live profile rows as soon
+  // as useUsers() resolves.
   if (typeof window === 'undefined') return []
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (raw) return JSON.parse(raw) as ExtendedProfile[]
   } catch {/* ignore */}
-  // Seed from DEMO_USERS with default account_status etc.
-  return DEMO_USERS.map<ExtendedProfile>(u => ({
+  return []
+}
+
+/** Map a raw Supabase profile row into the local ExtendedProfile shape this
+ *  page renders. Pure — no defaults are invented beyond what the schema says. */
+function profileToExtended(u: Profile): ExtendedProfile {
+  const status: AccountStatus = u.is_active ? 'active' : 'inactive'
+  return {
     ...u,
-    employee_id: u.id.toUpperCase(),
-    job_title: u.role === 'admin' ? 'Research Unit Director' : 'Research Coordinator',
-    account_status: u.is_active ? 'active' : 'inactive',
-    // Force-change-on-first-login was removed from the login flow — keep the
-    // seed default at false so the admin UI checkbox reflects reality.
+    account_status: status,
     must_change_password: false,
-  }))
+  }
 }
 
 function saveUsers(list: ExtendedProfile[]) {
@@ -304,8 +310,18 @@ export default function UsersPage() {
   const t = T[lang] as Translations
   const isRtl = lang === 'ar'
 
+  // Live departments for the filter dropdown + per-row badge lookup.
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
+
+  // Live users from Supabase. The localStorage cache survives a refresh while
+  // useUsers() resolves; once it resolves we overwrite with the live rows.
+  const { data: profileRows } = useUsers()
   // Users state
   const [users, setUsers] = useState<ExtendedProfile[]>([])
+  useEffect(() => {
+    if (profileRows) setUsers(profileRows.map(profileToExtended))
+  }, [profileRows])
   useEffect(() => { setUsers(loadUsers()) }, [])
   useEffect(() => { if (users.length) saveUsers(users) }, [users])
 
@@ -429,7 +445,7 @@ export default function UsersPage() {
     ]
     const rows = filtered.map(u => [
       u.full_name, u.email, u.phone || '', u.username, u.employee_id || '', u.job_title || '',
-      u.role, DEMO_DEPARTMENTS.find(d => d.id === u.department_id)?.name || '', statusOf(u),
+      u.role, departments.find(d => d.id === u.department_id)?.name || '', statusOf(u),
       u.last_login || '', String(u.login_count ?? 0),
     ])
     const csv = [header, ...rows]
@@ -559,7 +575,7 @@ export default function UsersPage() {
         </select>
         <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} className="form-input w-auto min-w-[160px]">
           <option value="all">{t.allDepts}</option>
-          {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value as AccountStatus | 'all')} className="form-input w-auto min-w-[150px]">
           <option value="all">{t.allStatus}</option>
@@ -617,7 +633,7 @@ export default function UsersPage() {
                 </tr>
               ) : (
                 filtered.map(u => {
-                  const dept = u.department_id ? DEMO_DEPARTMENTS.find(d => d.id === u.department_id) : undefined
+                  const dept = u.department_id ? departments.find(d => d.id === u.department_id) : undefined
                   const status = statusOf(u)
                   return (
                     <tr key={u.id} className={cn(selectedIds.has(u.id) && 'bg-blue-50/40')}>
@@ -777,6 +793,7 @@ export default function UsersPage() {
             t={t}
             isRtl={isRtl}
             existing={users}
+            departments={departments}
             editing={editing}
             onClose={closeModal}
             onSave={handleSaveUser}
@@ -792,11 +809,12 @@ export default function UsersPage() {
 // --------------- User Modal ---------------
 
 function UserModal({
-  t, isRtl, existing, editing, onClose, onSave, createdCreds, onCloseAfterCreds,
+  t, isRtl, existing, departments, editing, onClose, onSave, createdCreds, onCloseAfterCreds,
 }: {
   t: Translations
   isRtl: boolean
   existing: ExtendedProfile[]
+  departments: Department[]
   editing: ExtendedProfile | null
   onClose: () => void
   onSave: (u: ExtendedProfile, opts: { initialPw?: string }) => void
@@ -993,7 +1011,7 @@ function UserModal({
                   <Field label={t.fldDepartment}>
                     <select value={departmentId} onChange={e => setDepartmentId(e.target.value)} className="form-input">
                       <option value="">—</option>
-                      {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                      {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                     </select>
                   </Field>
                   <Field label={t.fldStatus}>

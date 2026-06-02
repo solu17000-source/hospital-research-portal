@@ -11,14 +11,29 @@
  * so the dashboard page doesn't pay their cost on first paint.
  */
 
-import {
-  DEMO_DEPARTMENTS, DEMO_RESEARCH, DEMO_STATS, DEMO_USERS,
-} from './demo-data'
 import { ROLE_LABELS, WORKFLOW_STAGES } from '@/types'
+import type {
+  DashboardStats, Department, Profile, ResearchProject,
+} from '@/types'
 
-// The monthly-research seed array used to live in demo-data.ts and was
-// removed alongside every other DEMO_* seed. Reports that needed it now
-// render an empty trend table rather than fabricating numbers.
+// The report generator used to read hand-written seed arrays directly from
+// `demo-data.ts`. That module was deleted as part of the production cut-over —
+// every collection now lives in Supabase and is fetched through hooks in
+// `data-source.ts`. Until the report pipeline is rewritten to receive live
+// data via parameters, these local empty stubs preserve the original
+// signatures so the reports module continues to type-check and render an
+// honest "no data" report instead of fabricated demo numbers.
+const RESEARCH_DATA: ResearchProject[] = []
+const DEPARTMENTS_DATA: Department[] = []
+const USERS_DATA: Profile[] = []
+const STATS_DATA: DashboardStats = {
+  total_projects: 0, active_projects: 0, completed_projects: 0,
+  published_papers: 0, delayed_projects: 0, pending_irb: 0,
+  upcoming_deadlines: 0, total_departments: 0, total_users: 0,
+  this_month_new: 0, funded_projects: 0, total_budget: 0,
+  q1_publications: 0, q2_publications: 0, q3_publications: 0,
+  q4_publications: 0, open_access_count: 0,
+}
 const MONTHLY_RESEARCH_DATA: { month: string; new: number; completed: number; published: number }[] = []
 
 // ============================================================
@@ -176,7 +191,7 @@ function fmtDay(d: Date | string | undefined): string {
 }
 function deptName(id?: string | null): string {
   if (!id) return '—'
-  return DEMO_DEPARTMENTS.find(d => d.id === id)?.name ?? id
+  return DEPARTMENTS_DATA.find(d => d.id === id)?.name ?? id
 }
 function inDateWindow(iso: string | undefined, from?: string, to?: string): boolean {
   if (!iso) return true
@@ -195,7 +210,7 @@ function buildReportData(ctx: ReportContext): ReportData {
   const deptFilter = filters.departmentId && filters.departmentId !== 'all' ? filters.departmentId : null
 
   // Common pool — most templates start from filtered research.
-  const filteredResearch = DEMO_RESEARCH.filter(r => {
+  const filteredResearch = RESEARCH_DATA.filter(r => {
     if (deptFilter && r.department_id !== deptFilter) return false
     if (!inDateWindow(r.created_at, filters.dateFrom, filters.dateTo)) return false
     return true
@@ -249,7 +264,7 @@ function buildReportData(ctx: ReportContext): ReportData {
       })
 
     case 'department': {
-      const rows = DEMO_DEPARTMENTS
+      const rows = DEPARTMENTS_DATA
         .filter(d => !deptFilter || d.id === deptFilter)
         .map(d => {
           const list = filteredResearch.filter(r => r.department_id === d.id)
@@ -281,19 +296,19 @@ function buildReportData(ctx: ReportContext): ReportData {
       return base({
         subtitle: `Annual analytics · ${generatedAt.getFullYear()}`,
         kpis: [
-          { label: 'Total projects',  value: String(DEMO_STATS.total_projects) },
-          { label: 'Published papers', value: String(DEMO_STATS.published_papers) },
-          { label: 'Q1 publications',  value: String(DEMO_STATS.q1_publications) },
-          { label: 'Total budget',     value: `SAR ${(DEMO_STATS.total_budget / 1_000_000).toFixed(2)}M` },
+          { label: 'Total projects',  value: String(STATS_DATA.total_projects) },
+          { label: 'Published papers', value: String(STATS_DATA.published_papers) },
+          { label: 'Q1 publications',  value: String(STATS_DATA.q1_publications) },
+          { label: 'Total budget',     value: `SAR ${(STATS_DATA.total_budget / 1_000_000).toFixed(2)}M` },
         ],
         table: {
           headers: ['Month', 'New projects', 'Completed', 'Published'],
           rows: MONTHLY_RESEARCH_DATA.map(m => [m.month, String(m.new), String(m.completed), String(m.published)]),
         },
         notes: [
-          `Departments contributing: ${DEMO_STATS.total_departments}`,
-          `Investigators & staff: ${DEMO_STATS.total_users}`,
-          `Open-access publications: ${DEMO_STATS.open_access_count}`,
+          `Departments contributing: ${STATS_DATA.total_departments}`,
+          `Investigators & staff: ${STATS_DATA.total_users}`,
+          `Open-access publications: ${STATS_DATA.open_access_count}`,
         ],
       })
 
@@ -301,10 +316,10 @@ function buildReportData(ctx: ReportContext): ReportData {
       return base({
         subtitle: 'Monthly research activity summary',
         kpis: [
-          { label: 'New this month',    value: String(DEMO_STATS.this_month_new) },
-          { label: 'Active research',   value: String(DEMO_STATS.active_projects) },
-          { label: 'Due this week',     value: String(DEMO_STATS.upcoming_deadlines) },
-          { label: 'Pending IRB',       value: String(DEMO_STATS.pending_irb) },
+          { label: 'New this month',    value: String(STATS_DATA.this_month_new) },
+          { label: 'Active research',   value: String(STATS_DATA.active_projects) },
+          { label: 'Due this week',     value: String(STATS_DATA.upcoming_deadlines) },
+          { label: 'Pending IRB',       value: String(STATS_DATA.pending_irb) },
         ],
         table: {
           headers: ['Research ID', 'Title', 'Stage', 'Status', 'Progress', 'Updated'],
@@ -418,14 +433,14 @@ function buildReportData(ctx: ReportContext): ReportData {
       return base({
         subtitle: 'Researcher productivity & engagement',
         kpis: [
-          { label: 'Researchers',  value: String(DEMO_USERS.length) },
-          { label: 'Active',       value: String(DEMO_USERS.filter(u => u.is_active).length) },
-          { label: 'Departments',  value: String(new Set(DEMO_USERS.map(u => u.department_id)).size) },
-          { label: 'Total logins', value: String(DEMO_USERS.reduce((s, u) => s + (u.login_count ?? 0), 0)) },
+          { label: 'Researchers',  value: String(USERS_DATA.length) },
+          { label: 'Active',       value: String(USERS_DATA.filter(u => u.is_active).length) },
+          { label: 'Departments',  value: String(new Set(USERS_DATA.map(u => u.department_id)).size) },
+          { label: 'Total logins', value: String(USERS_DATA.reduce((s, u) => s + (u.login_count ?? 0), 0)) },
         ],
         table: {
           headers: ['Full name', 'Email', 'Role', 'Department', 'Logins', 'Last login'],
-          rows: DEMO_USERS.map(u => [
+          rows: USERS_DATA.map(u => [
             u.full_name, u.email, ROLE_LABELS[u.role], deptName(u.department_id),
             String(u.login_count ?? 0), fmtDay(u.last_login),
           ]),

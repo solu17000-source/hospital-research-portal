@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import Link from 'next/link'
 import QRCode from 'react-qr-code'
-import { DEMO_RESEARCH, DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments, useResearchById } from '@/lib/data-source'
 import { WORKFLOW_STAGES, STATUS_COLORS, ROLE_LABELS } from '@/types'
 import { cn, formatDate, formatCurrency, getStatusBadgeClass, getPriorityClass, timeAgo } from '@/lib/utils'
 
@@ -23,8 +23,38 @@ export default function ResearchDetailPage() {
   const [activeTab, setActiveTab] = useState('Overview')
   const [showQR, setShowQR] = useState(false)
 
-  const research = DEMO_RESEARCH.find(r => r.id === params.id) || DEMO_RESEARCH[0]
-  const dept = DEMO_DEPARTMENTS.find(d => d.id === research.department_id)
+  // Live data — fetch the specific project + the department catalogue for
+  // the badge lookup. While the queries are in flight `research` is null and
+  // we render a small loading screen instead of guessing.
+  const researchId = Array.isArray(params.id) ? params.id[0] : (params.id as string | undefined) ?? ''
+  const { data: research, loading } = useResearchById(researchId)
+  const { data: deptData } = useDepartments()
+  const departments = deptData ?? []
+
+  if (loading) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <div className="text-center">
+          <div className="w-10 h-10 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin mx-auto mb-3" />
+          <p className="text-sm text-gray-500">Loading research…</p>
+        </div>
+      </div>
+    )
+  }
+  if (!research) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <div className="premium-card p-10 max-w-md text-center">
+          <p className="font-semibold text-gray-700">Research project not found.</p>
+          <button onClick={() => router.push('/research')} className="btn-primary text-sm mt-4">
+            Back to Research Database
+          </button>
+        </div>
+      </div>
+    )
+  }
+
+  const dept = departments.find(d => d.id === research.department_id)
   const stage = WORKFLOW_STAGES[research.workflow_stage]
   const qrData = `${typeof window !== 'undefined' ? window.location.origin : ''}/research/${research.id}`
 

@@ -8,10 +8,8 @@ import {
   ChevronRight, Eye, LogIn, LogOut, Lock,
 } from 'lucide-react'
 import Link from 'next/link'
-import { DEMO_RESEARCH, DEMO_DEPARTMENTS, DEMO_STATS } from '@/lib/demo-data'
+import { useDepartments, useResearch, useStats } from '@/lib/data-source'
 import { cn, formatDate, getStatusBadgeClass } from '@/lib/utils'
-
-const publicResearch = DEMO_RESEARCH.filter(r => r.is_public || r.publication_status === 'published')
 
 export default function VisitorPortalPage() {
   const params = useSearchParams()
@@ -19,6 +17,25 @@ export default function VisitorPortalPage() {
   const [deptFilter, setDeptFilter] = useState('all')
   const [yearFilter, setYearFilter] = useState('all')
   const [selected, setSelected] = useState<string | null>(null)
+
+  // Live public data — public research projects, departments + headline stats.
+  // Anonymous visitors can read research where is_public = true (RLS).
+  const { data: researchData } = useResearch({ publicOnly: true })
+  const publicResearch = useMemo(
+    () => (researchData ?? []).filter(r => r.is_public || r.publication_status === 'published'),
+    [researchData],
+  )
+  const { data: deptData } = useDepartments()
+  const departments = deptData ?? []
+  const { data: statsData } = useStats()
+  const stats = statsData ?? {
+    total_projects: 0, active_projects: 0, completed_projects: 0,
+    published_papers: 0, delayed_projects: 0, pending_irb: 0,
+    upcoming_deadlines: 0, total_departments: 0, total_users: 0,
+    this_month_new: 0, funded_projects: 0, total_budget: 0,
+    q1_publications: 0, q2_publications: 0, q3_publications: 0,
+    q4_publications: 0, open_access_count: 0,
+  }
 
   // Visitor session signals — set by clicking "Continue as Visitor" on /login.
   // Hydrated client-side so SSR stays stable.
@@ -44,10 +61,10 @@ export default function VisitorPortalPage() {
       const matchYear = yearFilter === 'all' || r.publication_date?.startsWith(yearFilter) || r.created_at.startsWith(yearFilter)
       return matchSearch && matchDept && matchYear
     })
-  }, [search, deptFilter, yearFilter])
+  }, [publicResearch, search, deptFilter, yearFilter])
 
   const selectedResearch = filtered.find(r => r.id === selected)
-  const getDeptName = (id?: string) => DEMO_DEPARTMENTS.find(d => d.id === id)?.name || 'N/A'
+  const getDeptName = (id?: string) => departments.find(d => d.id === id)?.name || 'N/A'
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-950 via-blue-900 to-blue-800">
@@ -162,10 +179,10 @@ export default function VisitorPortalPage() {
             className="flex justify-center gap-8 mt-10"
           >
             {[
-              { label: 'Published Papers', value: DEMO_STATS.published_papers },
+              { label: 'Published Papers', value: stats.published_papers },
               { label: 'Research Projects', value: publicResearch.length },
-              { label: 'Departments', value: DEMO_STATS.total_departments },
-              { label: 'Q1 Publications', value: DEMO_STATS.q1_publications },
+              { label: 'Departments', value: stats.total_departments },
+              { label: 'Q1 Publications', value: stats.q1_publications },
             ].map((s, i) => (
               <motion.div key={s.label}
                 initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: 0.3 + i * 0.1 }}
@@ -196,7 +213,7 @@ export default function VisitorPortalPage() {
             </div>
             <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} className="form-input w-auto">
               <option value="all">All Departments</option>
-              {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+              {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
             <select value={yearFilter} onChange={e => setYearFilter(e.target.value)} className="form-input w-auto">
               <option value="all">All Years</option>

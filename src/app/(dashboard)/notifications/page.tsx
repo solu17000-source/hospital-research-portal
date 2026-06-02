@@ -1,8 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Bell, CheckCheck, Trash2, Filter, AlertTriangle, Clock, BookOpen, QrCode, Shield, Activity, X } from 'lucide-react'
-import { DEMO_NOTIFICATIONS } from '@/lib/demo-data'
+import { useNotifications } from '@/lib/data-source'
 import type { Notification } from '@/types'
 import { cn, timeAgo } from '@/lib/utils'
 import toast from 'react-hot-toast'
@@ -33,7 +33,13 @@ const TYPE_COLORS: Record<string, string> = {
 }
 
 export default function NotificationsPage() {
-  const [notifications, setNotifications] = useState<Notification[]>(DEMO_NOTIFICATIONS)
+  // Live notifications from Supabase. Local state mirrors the server list
+  // so we can optimistically flip read/unread without a re-fetch.
+  const { data: liveNotifications } = useNotifications(undefined, 100)
+  const [notifications, setNotifications] = useState<Notification[]>([])
+  useEffect(() => {
+    if (liveNotifications) setNotifications(liveNotifications)
+  }, [liveNotifications])
   const [filter, setFilter] = useState<'all' | 'unread' | 'read'>('all')
   const [typeFilter, setTypeFilter] = useState('all')
 

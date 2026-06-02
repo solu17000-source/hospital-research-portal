@@ -6,7 +6,7 @@ import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import toast from 'react-hot-toast'
 import { useAuthStore } from '@/lib/auth-store'
-import { DEMO_NOTIFICATIONS } from '@/lib/demo-data'
+import { useNotifications } from '@/lib/data-source'
 import { cn, getInitials, timeAgo } from '@/lib/utils'
 import { ROLE_LABELS } from '@/types'
 
@@ -23,7 +23,10 @@ export function TopBar({ onMenuClick, sidebarCollapsed }: TopBarProps) {
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
 
-  const unreadCount = DEMO_NOTIFICATIONS.filter(n => !n.is_read).length
+  // Live notifications for the bell + dropdown preview.
+  const { data: notifications } = useNotifications(user?.id, 10)
+  const notifList = notifications ?? []
+  const unreadCount = notifList.filter(n => !n.is_read).length
 
   const handleLogout = () => {
     setShowProfile(false)
@@ -99,7 +102,7 @@ export function TopBar({ onMenuClick, sidebarCollapsed }: TopBarProps) {
                     </span>
                   </div>
                   <div className="max-h-80 overflow-y-auto">
-                    {DEMO_NOTIFICATIONS.slice(0, 5).map(n => (
+                    {notifList.slice(0, 5).map(n => (
                       <div key={n.id}
                         className={cn('flex gap-3 px-4 py-3 border-b border-gray-50 hover:bg-gray-50 cursor-pointer', !n.is_read && 'bg-blue-50/50')}>
                         <div className={cn('w-8 h-8 rounded-xl flex items-center justify-center flex-shrink-0 text-xs',

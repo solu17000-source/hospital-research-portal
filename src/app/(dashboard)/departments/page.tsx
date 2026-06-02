@@ -1,26 +1,33 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Building2, Plus, Edit2, Trash2, Users, FlaskConical, BookOpen, TrendingUp, X, Save } from 'lucide-react'
 import toast from 'react-hot-toast'
-import { DEMO_DEPARTMENTS, DEMO_RESEARCH } from '@/lib/demo-data'
+import { useDepartments, useResearch } from '@/lib/data-source'
 import type { Department } from '@/types'
 import { cn } from '@/lib/utils'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 
 export default function DepartmentsPage() {
-  const [depts, setDepts] = useState(DEMO_DEPARTMENTS)
+  // Live data — departments populate the cards; research powers the
+  // per-department mini-stats (total / active / published).
+  const { data: deptData } = useDepartments()
+  const [depts, setDepts] = useState<Department[]>([])
+  useEffect(() => { if (deptData) setDepts(deptData) }, [deptData])
+  const { data: researchData } = useResearch()
+  const researchAll = researchData ?? []
+
   const [showModal, setShowModal] = useState(false)
   const [editing, setEditing] = useState<Department | null>(null)
   const [form, setForm] = useState({ name: '', code: '', color: '#2563eb', description: '' })
 
   const getStats = (deptId: string) => {
-    const research = DEMO_RESEARCH.filter(r => r.department_id === deptId)
+    const research = researchAll.filter(r => r.department_id === deptId)
     return {
       total: research.length,
       active: research.filter(r => r.status === 'active').length,
       published: research.filter(r => r.publication_status === 'published').length,
-      score: Math.floor(Math.random() * 30) + 70,
+      score: research.length ? Math.round((research.filter(r => r.publication_status === 'published').length / research.length) * 100) : 0,
     }
   }
 

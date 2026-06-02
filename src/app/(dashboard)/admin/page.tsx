@@ -12,9 +12,8 @@ import {
 
 import { useAuthStore } from '@/lib/auth-store'
 import {
-  DEMO_ACTIVITY_LOGS, DEMO_DEPARTMENTS, DEMO_NOTIFICATIONS, DEMO_RESEARCH,
-  DEMO_STATS, DEMO_USERS,
-} from '@/lib/demo-data'
+  useActivityLogs, useDepartments, useNotifications, useStats, useUsers,
+} from '@/lib/data-source'
 import { cn, timeAgo } from '@/lib/utils'
 import { ROLE_LABELS, type UserRole } from '@/types'
 
@@ -179,21 +178,40 @@ export default function AdminPage() {
   const role = user?.role
   const isAdmin = role === 'admin' || role === 'super_admin'
 
-  // Build admin activity feed (filter audit logs to admin-relevant entries).
+  // Live Supabase data — replaces every former DEMO_* read.
+  const { data: liveStats } = useStats()
+  const { data: usersData } = useUsers()
+  const { data: deptsData } = useDepartments()
+  const { data: notifsData } = useNotifications(undefined, 50)
+  const { data: logsData } = useActivityLogs(100)
+
+  const liveUsers = usersData ?? []
+  const liveDepts = deptsData ?? []
+  const liveNotifs = notifsData ?? []
+  const liveLogs = logsData ?? []
+  const stat = liveStats ?? {
+    total_projects: 0, active_projects: 0, completed_projects: 0,
+    published_papers: 0, delayed_projects: 0, pending_irb: 0,
+    upcoming_deadlines: 0, total_departments: 0, total_users: 0,
+    this_month_new: 0, funded_projects: 0, total_budget: 0,
+    q1_publications: 0, q2_publications: 0, q3_publications: 0,
+    q4_publications: 0, open_access_count: 0,
+  }
+
+  // Admin activity feed — last few admin-relevant log entries from Supabase.
   const adminFeed = useMemo(
     () =>
-      DEMO_ACTIVITY_LOGS.filter(l =>
+      liveLogs.filter(l =>
         ['login', 'create', 'update', 'permission_change', 'role_change', 'reset_password'].includes(l.action),
       ).slice(0, 6),
-    [],
+    [liveLogs],
   )
 
-  // Stats sourced from existing demo data
   const stats = {
-    users: DEMO_USERS.filter(u => u.is_active).length,
-    research: DEMO_RESEARCH.length,
-    pending: DEMO_STATS.pending_irb,
-    delayed: DEMO_STATS.delayed_projects,
+    users: liveUsers.filter(u => u.is_active).length,
+    research: stat.total_projects,
+    pending: stat.pending_irb,
+    delayed: stat.delayed_projects,
   }
 
   if (!user) return null
@@ -228,13 +246,13 @@ export default function AdminPage() {
     color: string
     count?: number
   }[] = [
-    { href: '/users',          titleKey: 'moduleUsersTitle',    subKey: 'moduleUsersSub',    icon: Users,        color: '#2563eb', count: DEMO_USERS.length },
+    { href: '/users',          titleKey: 'moduleUsersTitle',    subKey: 'moduleUsersSub',    icon: Users,        color: '#2563eb', count: liveUsers.length },
     { href: '/admin#roles',    titleKey: 'moduleRolesTitle',    subKey: 'moduleRolesSub',    icon: Shield,       color: '#7c3aed' },
-    { href: '/departments',    titleKey: 'moduleDeptsTitle',    subKey: 'moduleDeptsSub',    icon: Building2,    color: '#0d9488', count: DEMO_DEPARTMENTS.length },
+    { href: '/departments',    titleKey: 'moduleDeptsTitle',    subKey: 'moduleDeptsSub',    icon: Building2,    color: '#0d9488', count: liveDepts.length },
     { href: '/settings',       titleKey: 'moduleSettingsTitle', subKey: 'moduleSettingsSub', icon: Settings,     color: '#475569' },
     { href: '/activity-logs',  titleKey: 'moduleAuditTitle',    subKey: 'moduleAuditSub',    icon: ScrollText,   color: '#db2777' },
     { href: '/backup',         titleKey: 'moduleBackupTitle',   subKey: 'moduleBackupSub',   icon: Database,     color: '#0891b2' },
-    { href: '/notifications',  titleKey: 'moduleNotifTitle',    subKey: 'moduleNotifSub',    icon: Bell,         color: '#f59e0b', count: DEMO_NOTIFICATIONS.length },
+    { href: '/notifications',  titleKey: 'moduleNotifTitle',    subKey: 'moduleNotifSub',    icon: Bell,         color: '#f59e0b', count: liveNotifs.length },
     { href: '/storage',        titleKey: 'moduleStorageTitle',  subKey: 'moduleStorageSub',  icon: HardDrive,    color: '#16a34a' },
     { href: '/visitor',        titleKey: 'moduleVisitorTitle',  subKey: 'moduleVisitorSub',  icon: Globe,        color: '#0ea5e9' },
   ]

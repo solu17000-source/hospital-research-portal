@@ -2,7 +2,7 @@
 import { useState } from 'react'
 import { motion } from 'framer-motion'
 import { GitBranch, Filter, BarChart2, List, KanbanSquare } from 'lucide-react'
-import { DEMO_RESEARCH, DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments, useResearch } from '@/lib/data-source'
 import { WORKFLOW_STAGES, type WorkflowStage } from '@/types'
 import { cn, truncate, getStatusBadgeClass } from '@/lib/utils'
 import Link from 'next/link'
@@ -25,14 +25,21 @@ export default function WorkflowPage() {
   const [viewMode, setViewMode] = useState<'kanban' | 'timeline'>('kanban')
   const [dragging, setDragging] = useState<string | null>(null)
 
+  // Live Supabase data — research projects and departments. Empty arrays
+  // surface while the queries are in flight.
+  const { data: researchData } = useResearch()
+  const research = researchData ?? []
+  const { data: deptData } = useDepartments()
+  const departments = deptData ?? []
+
   const getResearchByStage = (stage: WorkflowStage) =>
-    DEMO_RESEARCH.filter(r =>
+    research.filter(r =>
       r.workflow_stage === stage &&
       (filterDept === 'all' || r.department_id === filterDept)
     )
 
   const getDeptName = (id?: string) =>
-    DEMO_DEPARTMENTS.find(d => d.id === id)?.name?.split(' ').slice(0, 2).join(' ') || 'N/A'
+    departments.find(d => d.id === id)?.name?.split(' ').slice(0, 2).join(' ') || 'N/A'
 
   return (
     <div className="space-y-5">
@@ -69,7 +76,7 @@ export default function WorkflowPage() {
         <select value={filterDept} onChange={e => setFilterDept(e.target.value)}
           className="form-input w-auto text-sm">
           <option value="all">All Departments</option>
-          {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
         <div className="flex gap-2 ml-auto">
           {Object.entries(WORKFLOW_STAGES).slice(0, 4).map(([key, s]) => (
@@ -196,7 +203,7 @@ export default function WorkflowPage() {
                 </tr>
               </thead>
               <tbody>
-                {DEMO_RESEARCH
+                {research
                   .filter(r => filterDept === 'all' || r.department_id === filterDept)
                   .map(r => {
                     const s = WORKFLOW_STAGES[r.workflow_stage]

@@ -9,7 +9,8 @@ import toast from 'react-hot-toast'
 import { useAuthStore } from '@/lib/auth-store'
 import { cn, getInitials } from '@/lib/utils'
 import { ROLE_LABELS } from '@/types'
-import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments } from '@/lib/data-source'
+import type { Department } from '@/types'
 
 const TABS = [
   { id: 'profile', label: 'My Profile', icon: User },
@@ -21,6 +22,8 @@ const TABS = [
 
 export default function SettingsPage() {
   const { user, updateProfile } = useAuthStore()
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
   const [activeTab, setActiveTab] = useState('profile')
   const [saving, setSaving] = useState(false)
 
@@ -158,7 +161,7 @@ export default function SettingsPage() {
                       <label className="form-label">Department</label>
                       <select value={profile.department_id} onChange={e => setProfile(f => ({ ...f, department_id: e.target.value }))}
                         className="form-input">
-                        {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                        {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                       </select>
                     </div>
                     <div>

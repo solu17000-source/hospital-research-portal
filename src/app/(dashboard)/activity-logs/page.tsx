@@ -1,8 +1,8 @@
 'use client'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { ScrollText, Search, Filter, Download, LogIn, Edit, Trash2, Upload, Download as DL, QrCode, Shield, Eye } from 'lucide-react'
-import { DEMO_ACTIVITY_LOGS } from '@/lib/demo-data'
+import { useActivityLogs } from '@/lib/data-source'
 import { cn, formatDate, timeAgo } from '@/lib/utils'
 
 const ACTION_ICONS: Record<string, React.ElementType> = {
@@ -33,18 +33,12 @@ const ACTION_COLORS: Record<string, string> = {
   view: 'bg-gray-100 text-gray-500',
 }
 
-const EXTRA_LOGS = [
-  { id: 'a7', user_name: 'Dr. Fatima Al-Zahrani', action: 'create', entity_type: 'report', entity_name: 'Annual Analytics 2026', description: 'Generated annual research report', created_at: '2026-05-13T09:30:00Z' },
-  { id: 'a8', user_name: 'Afnan Bakri', action: 'upload', entity_type: 'attachment', entity_name: 'Data-Collection-Sheet.xlsx', description: 'Uploaded data collection form', created_at: '2026-05-12T14:10:00Z' },
-  { id: 'a9', user_name: 'Dr. Khalid Al-Ghamdi', action: 'login', entity_type: 'auth', description: 'Logged in from mobile device', ip_address: '10.0.0.45', created_at: '2026-05-12T08:05:00Z' },
-  { id: 'a10', user_name: 'Sultan Alallah', action: 'update', entity_type: 'research_project', entity_name: 'AI-Assisted Radiology Diagnosis', description: 'Updated IRB approval status', created_at: '2026-05-11T11:00:00Z' },
-  { id: 'a11', user_name: 'Afnan Bakri', action: 'download', entity_type: 'report', entity_name: 'Department Productivity Q1 2026', description: 'Downloaded productivity report', created_at: '2026-05-10T16:20:00Z' },
-  { id: 'a12', user_name: 'Sultan Alallah', action: 'permission_change', entity_type: 'user', entity_name: 'dr.khalid.surgery', description: 'Updated user role to Department Head', created_at: '2026-05-09T10:00:00Z' },
-]
-
-const ALL_LOGS = [...DEMO_ACTIVITY_LOGS, ...EXTRA_LOGS].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-
 export default function ActivityLogsPage() {
+  // Live activity feed from Supabase, sorted newest-first (the loader already
+  // applies `.order('created_at', desc)`).
+  const { data: logs } = useActivityLogs(200)
+  const ALL_LOGS = useMemo(() => logs ?? [], [logs])
+
   const [search, setSearch] = useState('')
   const [actionFilter, setActionFilter] = useState('all')
   const [page, setPage] = useState(1)

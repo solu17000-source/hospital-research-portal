@@ -8,9 +8,10 @@ import {
   Presentation, Search, Sparkles, Trash2, X,
 } from 'lucide-react'
 
-import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments } from '@/lib/data-source'
 import { useLang } from '@/lib/i18n'
 import { cn, formatDate } from '@/lib/utils'
+import type { Department } from '@/types'
 
 type ConferenceType = 'local' | 'international'
 type ParticipationType = 'oral' | 'poster' | 'abstract' | 'published_paper'
@@ -117,6 +118,10 @@ function seed(): Conference[] {
 
 export default function ConferencesPage() {
   const { isRtl, toggle, t } = useLang(DICT)
+  // Live Supabase department list — used to populate the dropdown and the
+  // per-row badge lookup. Empty array while the query is in flight.
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
   const [items, setItems] = useState<Conference[]>([])
   useEffect(() => { setItems(load()) }, [])
   useEffect(() => { if (items.length) save(items) }, [items])
@@ -221,7 +226,7 @@ export default function ConferencesPage() {
         </div>
         <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} className="form-input w-auto min-w-[160px]">
           <option value="all">{t.allDepts}</option>
-          {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
         <select value={typeFilter} onChange={e => setTypeFilter(e.target.value as ConferenceType | 'all')} className="form-input w-auto min-w-[140px]">
           <option value="all">{t.allTypes}</option>
@@ -252,7 +257,7 @@ export default function ConferencesPage() {
                   <p className="text-xs mt-1">{t.noneSub}</p>
                 </td></tr>
               ) : filtered.map(c => {
-                const dept = c.department_id ? DEMO_DEPARTMENTS.find(d => d.id === c.department_id) : undefined
+                const dept = c.department_id ? departments.find(d => d.id === c.department_id) : undefined
                 return (
                   <tr key={c.id}>
                     <td>
@@ -300,17 +305,18 @@ export default function ConferencesPage() {
       </div>
 
       <AnimatePresence>
-        {modalOpen && <AddModal t={t} isRtl={isRtl} onClose={() => setModalOpen(false)} onSave={handleSave} />}
+        {modalOpen && <AddModal t={t} isRtl={isRtl} departments={departments} onClose={() => setModalOpen(false)} onSave={handleSave} />}
       </AnimatePresence>
     </div>
   )
 }
 
 function AddModal({
-  t, isRtl, onClose, onSave,
+  t, isRtl, departments, onClose, onSave,
 }: {
   t: Record<keyof typeof DICT.en, string>
   isRtl: boolean
+  departments: Department[]
   onClose: () => void
   onSave: (c: Conference) => void
 }) {
@@ -405,7 +411,7 @@ function AddModal({
               <Field label={t.fldDept}>
                 <select value={departmentId} onChange={e => setDepartmentId(e.target.value)} className="form-input">
                   <option value="">—</option>
-                  {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </Field>
               <Field label={t.fldStatus}>

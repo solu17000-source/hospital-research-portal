@@ -1,25 +1,18 @@
 'use client'
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Brain, AlertTriangle, Lightbulb, CheckCircle, Info, TrendingUp, TrendingDown, Star, RefreshCw, ChevronRight, Clock } from 'lucide-react'
-import { DEMO_AI_INSIGHTS, DEMO_RESEARCH, DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useAiInsights, useResearch } from '@/lib/data-source'
 import { cn, timeAgo } from '@/lib/utils'
 import toast from 'react-hot-toast'
 import { RadarChart, PolarGrid, PolarAngleAxis, Radar, ResponsiveContainer, Tooltip } from 'recharts'
 import Link from 'next/link'
 
-const DEPT_RADAR_DATA = [
-  { dept: 'Nursing', publications: 85, timeliness: 70, collaboration: 90, quality: 88, funding: 75 },
-  { dept: 'Cardiology', publications: 95, timeliness: 88, collaboration: 82, quality: 91, funding: 90 },
-  { dept: 'Surgery', publications: 72, timeliness: 78, collaboration: 65, quality: 79, funding: 85 },
-]
-
-const STAFF_PRODUCTIVITY = [
-  { name: 'Sultan Alallah', score: 94, projects: 12, published: 5, on_time: 92 },
-  { name: 'Dr. Fatima Al-Zahrani', score: 89, projects: 8, published: 3, on_time: 88 },
-  { name: 'Afnan Bakri', score: 85, projects: 14, published: 2, on_time: 75 },
-  { name: 'Dr. Khalid Al-Ghamdi', score: 81, projects: 6, published: 2, on_time: 84 },
-]
+// The radar + staff-productivity widgets used to render hand-written demo
+// numbers. They are now empty until a real analytics service is wired —
+// the UI shows the placeholder rather than fabricating numbers.
+const DEPT_RADAR_DATA: { dept: string; publications: number; timeliness: number; collaboration: number; quality: number; funding: number }[] = []
+const STAFF_PRODUCTIVITY: { name: string; score: number; projects: number; published: number; on_time: number }[] = []
 
 const INSIGHT_ICONS = {
   warning: AlertTriangle,
@@ -46,18 +39,30 @@ export default function AIInsightsPage() {
   const [refreshing, setRefreshing] = useState(false)
   const [filter, setFilter] = useState<string>('all')
 
-  const filtered = DEMO_AI_INSIGHTS.filter(i => filter === 'all' || i.type === filter)
+  // Live data — AI insights (currently always [] until an analytics service
+  // is wired) and the research catalogue used to derive the small badges
+  // (delayed / pending IRB / deadline-approaching).
+  const { data: insightsData, refetch: refetchInsights } = useAiInsights()
+  const insights = insightsData ?? []
+  const { data: researchData } = useResearch()
+  const research = researchData ?? []
+
+  const filtered = useMemo(
+    () => insights.filter(i => filter === 'all' || i.type === filter),
+    [insights, filter],
+  )
 
   const handleRefresh = async () => {
     setRefreshing(true)
-    await new Promise(r => setTimeout(r, 1500))
+    refetchInsights()
+    await new Promise(r => setTimeout(r, 600))
     setRefreshing(false)
-    toast.success('AI insights refreshed with latest data!')
+    toast.success('AI insights refreshed.')
   }
 
-  const delayedProjects = DEMO_RESEARCH.filter(r => r.status === 'delayed')
-  const pendingIRB = DEMO_RESEARCH.filter(r => r.irb_approval_status === 'pending')
-  const nearingDeadline = DEMO_RESEARCH.filter(r => {
+  const delayedProjects = research.filter(r => r.status === 'delayed')
+  const pendingIRB = research.filter(r => r.irb_approval_status === 'pending')
+  const nearingDeadline = research.filter(r => {
     if (!r.expected_completion_date) return false
     const days = Math.ceil((new Date(r.expected_completion_date).getTime() - Date.now()) / 86400000)
     return days >= 0 && days <= 30
@@ -86,7 +91,7 @@ export default function AIInsightsPage() {
           { label: 'Delayed Projects', value: delayedProjects.length, color: 'orange', icon: AlertTriangle, trend: 'down' },
           { label: 'Pending IRB', value: pendingIRB.length, color: 'yellow', icon: Clock, trend: 'up' },
           { label: 'Nearing Deadline', value: nearingDeadline.length, color: 'red', icon: TrendingDown, trend: 'down' },
-          { label: 'Active Insights', value: DEMO_AI_INSIGHTS.length, color: 'purple', icon: Brain, trend: 'stable' },
+          { label: 'Active Insights', value: insights.length, color: 'purple', icon: Brain, trend: 'stable' },
         ].map((m, i) => (
           <motion.div key={m.label}
             initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.08 }}

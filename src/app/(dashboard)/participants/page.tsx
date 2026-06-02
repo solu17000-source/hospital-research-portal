@@ -8,9 +8,10 @@ import {
   Phone, Plus, Search, Sparkles, Trash2, UserRound, X,
 } from 'lucide-react'
 
-import { DEMO_DEPARTMENTS } from '@/lib/demo-data'
+import { useDepartments } from '@/lib/data-source'
 import { useLang } from '@/lib/i18n'
 import { cn, formatDate } from '@/lib/utils'
+import type { Department } from '@/types'
 
 type AttendanceStatus = 'registered' | 'attended' | 'absent' | 'cancelled'
 type CertificateStatus = 'not_issued' | 'pending' | 'issued'
@@ -111,6 +112,8 @@ function seed(): Participant[] {
 
 export default function ParticipantsPage() {
   const { isRtl, toggle, t } = useLang(DICT)
+  const { data: deptData } = useDepartments()
+  const departments: Department[] = deptData ?? []
   const [items, setItems] = useState<Participant[]>([])
   useEffect(() => { setItems(load()) }, [])
   useEffect(() => { if (items.length) save(items) }, [items])
@@ -154,7 +157,7 @@ export default function ParticipantsPage() {
     const header = ['Full Name', 'Email', 'Phone', 'Employee ID', 'Department', 'Activity', 'Attendance', 'Certificate', 'Registered']
     const rows = filtered.map(p => [
       p.full_name, p.email, p.phone || '', p.employee_id || '',
-      DEMO_DEPARTMENTS.find(d => d.id === p.department_id)?.name || '',
+      departments.find(d => d.id === p.department_id)?.name || '',
       p.activity, p.attendance, p.certificate, p.registered_at,
     ])
     const csv = [header, ...rows]
@@ -238,7 +241,7 @@ export default function ParticipantsPage() {
         </div>
         <select value={deptFilter} onChange={e => setDeptFilter(e.target.value)} className="form-input w-auto min-w-[160px]">
           <option value="all">{t.allDepts}</option>
-          {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+          {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
         <select value={attFilter} onChange={e => setAttFilter(e.target.value as AttendanceStatus | 'all')} className="form-input w-auto min-w-[140px]">
           <option value="all">{t.allAttendance}</option>
@@ -268,7 +271,7 @@ export default function ParticipantsPage() {
                   <p className="text-xs mt-1">{t.noneSub}</p>
                 </td></tr>
               ) : filtered.map(p => {
-                const dept = p.department_id ? DEMO_DEPARTMENTS.find(d => d.id === p.department_id) : undefined
+                const dept = p.department_id ? departments.find(d => d.id === p.department_id) : undefined
                 return (
                   <tr key={p.id}>
                     <td><span className="font-semibold text-sm text-gray-900">{p.full_name}</span></td>
@@ -303,17 +306,18 @@ export default function ParticipantsPage() {
       </div>
 
       <AnimatePresence>
-        {modalOpen && <AddModal t={t} isRtl={isRtl} onClose={() => setModalOpen(false)} onSave={handleSave} />}
+        {modalOpen && <AddModal t={t} isRtl={isRtl} departments={departments} onClose={() => setModalOpen(false)} onSave={handleSave} />}
       </AnimatePresence>
     </div>
   )
 }
 
 function AddModal({
-  t, isRtl, onClose, onSave,
+  t, isRtl, departments, onClose, onSave,
 }: {
   t: Record<keyof typeof DICT.en, string>
   isRtl: boolean
+  departments: Department[]
   onClose: () => void
   onSave: (p: Participant) => void
 }) {
@@ -379,7 +383,7 @@ function AddModal({
               <Field label={t.fldDept}>
                 <select value={departmentId} onChange={e => setDepartmentId(e.target.value)} className="form-input">
                   <option value="">—</option>
-                  {DEMO_DEPARTMENTS.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
               </Field>
             </div>
