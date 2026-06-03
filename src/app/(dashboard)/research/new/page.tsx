@@ -5,7 +5,7 @@ import { motion } from 'framer-motion'
 import {
   ChevronLeft, ChevronRight, Save, FlaskConical, User,
   Building2, Calendar, Shield, DollarSign, BookOpen,
-  FileText, CheckCircle, AlertCircle
+  FileText, CheckCircle, AlertCircle, RefreshCw,
 } from 'lucide-react'
 import Link from 'next/link'
 import toast from 'react-hot-toast'
@@ -33,7 +33,13 @@ export default function NewResearchPage() {
   // Live department list — real Supabase UUIDs. Critical: without this
   // the dropdown emits short demo ids like "d4" that the Supabase `uuid`
   // column rejects on insert.
-  const { data: deptData } = useDepartments()
+  //
+  // `loading` and `refetch` are surfaced into the dropdown UX so an
+  // intermittent fetch failure (expired JWT, brief network blip, stale
+  // tab open from before a DB migration ran) is visible to the user with
+  // a one-click recovery, instead of leaving them looking at an empty
+  // <select> and wondering why their freshly-seeded 19 rows are missing.
+  const { data: deptData, loading: deptLoading, refetch: refetchDepartments } = useDepartments()
   const departments: Department[] = deptData ?? []
 
   const [step, setStep] = useState(1)
@@ -247,12 +253,49 @@ export default function NewResearchPage() {
             <div className="space-y-4">
               <h2 className="text-lg font-bold text-gray-900 mb-4">Department Assignment</h2>
               <div>
-                <label className="form-label">Department *</label>
-                <select value={form.department_id} onChange={e => set('department_id', e.target.value)}
-                  className="form-input">
-                  <option value="">Select the research department</option>
+                <div className="flex items-center justify-between gap-3 mb-1">
+                  <label className="form-label !mb-0">
+                    Department *
+                    <span className="ms-2 text-[11px] font-normal text-gray-400 tabular-nums">
+                      {deptLoading
+                        ? 'Loading…'
+                        : `${departments.length} option${departments.length === 1 ? '' : 's'} live from Supabase`}
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => refetchDepartments()}
+                    title="Refresh department list"
+                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 disabled:opacity-50 transition-colors"
+                    disabled={deptLoading}
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${deptLoading ? 'animate-spin' : ''}`} />
+                    Refresh
+                  </button>
+                </div>
+                <select
+                  value={form.department_id}
+                  onChange={e => set('department_id', e.target.value)}
+                  className="form-input"
+                  disabled={deptLoading}
+                >
+                  <option value="">
+                    {deptLoading ? 'Loading departments…' : 'Select the research department'}
+                  </option>
                   {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
                 </select>
+                {!deptLoading && departments.length === 0 && (
+                  <div className="mt-2 flex items-start gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800">
+                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                    <div className="leading-relaxed">
+                      <p className="font-semibold">No departments returned from Supabase.</p>
+                      <p className="mt-0.5">
+                        If you just ran a migration, hard-refresh the page (Ctrl+Shift+R).
+                        If the issue persists, sign out and back in — your session token may have expired.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
               <div>
                 <label className="form-label">Priority Level</label>
