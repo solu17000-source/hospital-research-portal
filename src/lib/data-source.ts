@@ -114,11 +114,15 @@ const EMPTY_STATS: DashboardStats = {
 export async function fetchDepartments(): Promise<Department[]> {
   const supabase = createClient()
   try {
-    const { data, error } = await supabase
-      .from('departments')
-      .select('*')
-      .eq('is_active', true)
-      .order('research_count', { ascending: false })
+    const { data, error } = await withTimeout(
+      supabase
+        .from('departments')
+        .select('*')
+        .eq('is_active', true)
+        .order('research_count', { ascending: false }),
+      10_000,
+      'fetchDepartments',
+    )
     if (error) {
       console.error('[fetchDepartments] Supabase error:', error)
       return []
@@ -149,7 +153,7 @@ export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchP
     if (opts.status)       q = q.eq('status', opts.status)
     if (opts.publicOnly)   q = q.eq('is_public', true)
     if (opts.limit)        q = q.limit(opts.limit)
-    const { data, error } = await q
+    const { data, error } = await withTimeout(q, 10_000, 'fetchResearch')
     if (error) {
       console.error('[fetchResearch] Supabase error:', error)
       return []
@@ -164,11 +168,11 @@ export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchP
 export async function fetchResearchById(id: string): Promise<ResearchProject | null> {
   const supabase = createClient()
   try {
-    const { data, error } = await supabase
-      .from('research_projects')
-      .select('*')
-      .eq('id', id)
-      .maybeSingle()
+    const { data, error } = await withTimeout(
+      supabase.from('research_projects').select('*').eq('id', id).maybeSingle(),
+      10_000,
+      'fetchResearchById',
+    )
     if (error) {
       console.error('[fetchResearchById] Supabase error:', error)
       return null
@@ -183,10 +187,11 @@ export async function fetchResearchById(id: string): Promise<ResearchProject | n
 export async function fetchUsers(): Promise<Profile[]> {
   const supabase = createClient()
   try {
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('*')
-      .order('created_at', { ascending: false })
+    const { data, error } = await withTimeout(
+      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
+      10_000,
+      'fetchUsers',
+    )
     if (error) {
       console.error('[fetchUsers] Supabase error:', error)
       return []
@@ -207,7 +212,7 @@ export async function fetchNotifications(userId?: string, limit = 20): Promise<N
       .order('created_at', { ascending: false })
       .limit(limit)
     if (userId) q = q.eq('user_id', userId)
-    const { data, error } = await q
+    const { data, error } = await withTimeout(q, 10_000, 'fetchNotifications')
     if (error) {
       console.error('[fetchNotifications] Supabase error:', error)
       return []
@@ -222,11 +227,11 @@ export async function fetchNotifications(userId?: string, limit = 20): Promise<N
 export async function fetchActivityLogs(limit = 50): Promise<ActivityLog[]> {
   const supabase = createClient()
   try {
-    const { data, error } = await supabase
-      .from('activity_logs')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit)
+    const { data, error } = await withTimeout(
+      supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(limit),
+      10_000,
+      'fetchActivityLogs',
+    )
     if (error) {
       console.error('[fetchActivityLogs] Supabase error:', error)
       return []
@@ -255,22 +260,26 @@ export async function fetchStats(): Promise<DashboardStats> {
     const [
       total, active, completed, delayed, published, pendingIrb, q1, q2, q3, q4, openAccess,
       totalDepartments, totalUsers, fundedProjects,
-    ] = await Promise.all([
-      countWhere(supabase, 'research_projects'),
-      countWhere(supabase, 'research_projects', { status: 'active' }),
-      countWhere(supabase, 'research_projects', { status: 'completed' }),
-      countWhere(supabase, 'research_projects', { status: 'delayed' }),
-      countWhere(supabase, 'research_projects', { publication_status: 'published' }),
-      countWhere(supabase, 'research_projects', { irb_approval_status: 'pending' }),
-      countWhere(supabase, 'research_projects', { journal_quartile: 'Q1' }),
-      countWhere(supabase, 'research_projects', { journal_quartile: 'Q2' }),
-      countWhere(supabase, 'research_projects', { journal_quartile: 'Q3' }),
-      countWhere(supabase, 'research_projects', { journal_quartile: 'Q4' }),
-      countWhere(supabase, 'research_projects', { is_open_access: true }),
-      countWhere(supabase, 'departments', { is_active: true }),
-      countWhere(supabase, 'profiles', { is_active: true }),
-      countWhere(supabase, 'research_projects', { funding_source: { _not_null: true } }),
-    ])
+    ] = await withTimeout(
+      Promise.all([
+        countWhere(supabase, 'research_projects'),
+        countWhere(supabase, 'research_projects', { status: 'active' }),
+        countWhere(supabase, 'research_projects', { status: 'completed' }),
+        countWhere(supabase, 'research_projects', { status: 'delayed' }),
+        countWhere(supabase, 'research_projects', { publication_status: 'published' }),
+        countWhere(supabase, 'research_projects', { irb_approval_status: 'pending' }),
+        countWhere(supabase, 'research_projects', { journal_quartile: 'Q1' }),
+        countWhere(supabase, 'research_projects', { journal_quartile: 'Q2' }),
+        countWhere(supabase, 'research_projects', { journal_quartile: 'Q3' }),
+        countWhere(supabase, 'research_projects', { journal_quartile: 'Q4' }),
+        countWhere(supabase, 'research_projects', { is_open_access: true }),
+        countWhere(supabase, 'departments', { is_active: true }),
+        countWhere(supabase, 'profiles', { is_active: true }),
+        countWhere(supabase, 'research_projects', { funding_source: { _not_null: true } }),
+      ]),
+      15_000,
+      'fetchStats',
+    )
     return {
       ...EMPTY_STATS,
       total_projects: total ?? 0,
