@@ -113,25 +113,27 @@ const EMPTY_STATS: DashboardStats = {
 
 export async function fetchDepartments(): Promise<Department[]> {
   const supabase = createClient()
-  try {
-    const { data, error } = await withTimeout(
-      supabase
-        .from('departments')
-        .select('*')
-        .eq('is_active', true)
-        .order('research_count', { ascending: false }),
-      10_000,
-      'fetchDepartments',
-    )
-    if (error) {
-      console.error('[fetchDepartments] Supabase error:', error)
-      return []
-    }
-    return (data as Department[] | null) ?? []
-  } catch (e) {
-    console.error('[fetchDepartments] threw:', e)
-    return []
+  // Departments propagates Supabase errors to the hook (instead of
+  // swallowing them with `return []`). That lets the dropdown in
+  // /research/new render the real error message — "JWT expired", "Failed
+  // to fetch", "permission denied for table departments", whatever —
+  // rather than a generic empty state that gives no diagnostic. Other
+  // fetchers still swallow because their consumers don't have a useful
+  // place to surface the error.
+  const { data, error } = await withTimeout(
+    supabase
+      .from('departments')
+      .select('*')
+      .eq('is_active', true)
+      .order('research_count', { ascending: false }),
+    10_000,
+    'fetchDepartments',
+  )
+  if (error) {
+    console.error('[fetchDepartments] Supabase error:', error)
+    throw new Error(error.message || 'Supabase returned an error')
   }
+  return (data as Department[] | null) ?? []
 }
 
 export type ResearchQuery = {

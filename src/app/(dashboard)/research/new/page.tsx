@@ -34,12 +34,18 @@ export default function NewResearchPage() {
   // the dropdown emits short demo ids like "d4" that the Supabase `uuid`
   // column rejects on insert.
   //
-  // `loading` and `refetch` are surfaced into the dropdown UX so an
-  // intermittent fetch failure (expired JWT, brief network blip, stale
-  // tab open from before a DB migration ran) is visible to the user with
-  // a one-click recovery, instead of leaving them looking at an empty
-  // <select> and wondering why their freshly-seeded 19 rows are missing.
-  const { data: deptData, loading: deptLoading, refetch: refetchDepartments } = useDepartments()
+  // `loading` / `error` / `refetch` are surfaced into the dropdown UX so
+  // an intermittent fetch failure (expired JWT, brief network blip, stale
+  // tab open from before a DB migration ran, PostgREST schema cache
+  // serving stale rows) is visible to the user with a one-click recovery,
+  // instead of leaving them looking at an empty <select> and wondering
+  // why their freshly-seeded 19 rows are missing.
+  const {
+    data: deptData,
+    loading: deptLoading,
+    error: deptError,
+    refetch: refetchDepartments,
+  } = useDepartments()
   const departments: Department[] = deptData ?? []
 
   const [step, setStep] = useState(1)
@@ -289,9 +295,24 @@ export default function NewResearchPage() {
                     <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                     <div className="leading-relaxed">
                       <p className="font-semibold">No departments returned from Supabase.</p>
-                      <p className="mt-0.5">
-                        If you just ran a migration, hard-refresh the page (Ctrl+Shift+R).
-                        If the issue persists, sign out and back in — your session token may have expired.
+                      {deptError ? (
+                        <p className="mt-0.5 font-mono text-[10px] break-all">
+                          {deptError.message}
+                        </p>
+                      ) : (
+                        <p className="mt-0.5">
+                          The query succeeded but the rowset was empty — most often a
+                          PostgREST schema cache lag right after a migration.
+                        </p>
+                      )}
+                      <p className="mt-1.5">
+                        Click <span className="font-bold">Refresh</span> above. If that
+                        keeps returning zero, hard-refresh the tab (Ctrl+Shift+R) and
+                        then sign out and back in.
+                      </p>
+                      <p className="mt-1 text-[10px] opacity-70">
+                        Check the browser console for a <span className="font-mono">[fetchDepartments]</span> error
+                        line — it will print the underlying Supabase response.
                       </p>
                     </div>
                   </div>
