@@ -2,19 +2,24 @@ import { createBrowserClient } from '@supabase/ssr'
 import { createServerClient as createSSRServerClient, type CookieOptions } from '@supabase/ssr'
 import { type NextRequest, NextResponse } from 'next/server'
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+// Hardcoded project identifiers as a defensive fallback.
+//
+// The browser diagnostic confirmed that the singleton supabase-js client
+// was being initialised with empty values when the NEXT_PUBLIC_*
+// env vars failed to inline at build time on some routes — the symptom
+// was a "successful" login that left supabase-js with no usable session
+// token, so every authenticated write hung indefinitely on
+// auth.uid() = null at the RLS layer.
+//
+// Both values are publishable (the URL is just the project host, the
+// anon key is by design exposed to the browser and protected by RLS), so
+// hardcoding them as fallbacks is safe and removes an entire class of
+// "env var didn't load" bugs.
+const PMNH_SUPABASE_URL = 'https://owcgtvobxpystflqmyij.supabase.co'
+const PMNH_SUPABASE_ANON_KEY = 'sb_publishable_bA9xnDC9Rjin5OzjGAT4kQ_sh4_4Hcx'
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  // The portal is wired to Supabase as the single source of truth — no demo
-  // fallback. If credentials are missing the operator should know at boot
-  // rather than silently see empty pages.
-  // eslint-disable-next-line no-console
-  console.error(
-    '[supabase] NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY are required. ' +
-    'Set them in .env.local for local development, or in Vercel project settings.',
-  )
-}
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || PMNH_SUPABASE_URL
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || PMNH_SUPABASE_ANON_KEY
 
 /**
  * @deprecated The demo-mode branch was removed entirely. This constant is
@@ -41,7 +46,7 @@ let _browserClient: ReturnType<typeof createBrowserClient> | null = null
 
 export function createClient() {
   if (_browserClient) return _browserClient
-  _browserClient = createBrowserClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
+  _browserClient = createBrowserClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       persistSession: true,
       autoRefreshToken: true,
@@ -69,7 +74,7 @@ export function createClient() {
  * pain point.
  */
 export function createFreshClient() {
-  return createBrowserClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
+  return createBrowserClient(supabaseUrl, supabaseAnonKey, {
     auth: {
       persistSession: false,
       autoRefreshToken: false,
@@ -90,7 +95,7 @@ export function createServerClient(cookieStore: {
   set(name: string, value: string, options: CookieOptions): void
   delete(name: string, options: CookieOptions): void
 }) {
-  return createSSRServerClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
+  return createSSRServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       get(name: string) {
         return cookieStore.get(name)?.value
@@ -111,7 +116,7 @@ export function createServerClient(cookieStore: {
 
 export function createMiddlewareClient(request: NextRequest) {
   let response = NextResponse.next({ request: { headers: request.headers } })
-  const supabase = createSSRServerClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
+  const supabase = createSSRServerClient(supabaseUrl, supabaseAnonKey, {
     cookies: {
       get(name: string) {
         return request.cookies.get(name)?.value

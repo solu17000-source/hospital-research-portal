@@ -86,6 +86,42 @@ export const useAuthStore = create<AuthState>()(
             }
           }
 
+          // CRITICAL — verify the session is actually established before
+          // setting `isAuthenticated`. signInWithPassword can return a
+          // user object while the session-token write to storage races
+          // with the redirect, especially after a sign-out + sign-in
+          // cycle. That leaves Zustand persisting isAuthenticated=true
+          // while supabase-js holds no usable token, and every later
+          // write hangs on `auth.uid() = null` at the RLS layer.
+          //
+          // We poll the session up to 3 times (≈400ms total) and try
+          // one explicit refreshSession() before giving up. If the
+          // session still isn't there we bail out cleanly so the UI
+          // can re-prompt instead of dropping the user into a broken
+          // signed-in state.
+          let verifiedSession: typeof data.session | null = data.session
+          if (!verifiedSession?.access_token) {
+            for (let i = 0; i < 3; i++) {
+              await new Promise(r => setTimeout(r, 100))
+              const s = (await supabase.auth.getSession()).data.session
+              if (s?.access_token) { verifiedSession = s; break }
+            }
+          }
+          if (!verifiedSession?.access_token) {
+            const refreshed = await supabase.auth.refreshSession()
+            verifiedSession = refreshed.data.session ?? null
+          }
+          if (!verifiedSession?.access_token) {
+            await supabase.auth.signOut()
+            set({ isLoading: false })
+            return {
+              success: false,
+              error: 'تعذّر تأسيس الجلسة في المتصفح. أعد المحاولة.',
+              errorCode: 'unknown',
+            }
+          }
+          console.info('[auth-store.login] session established, access_token length:', verifiedSession.access_token.length)
+
           // Fetch the profile row.
           let profile: Profile | null = null
           {
@@ -171,7 +207,23 @@ export const useAuthStore = create<AuthState>()(
       logout: async () => {
         const supabase = createClient()
         try { await supabase.auth.signOut() } catch { /* ignore */ }
-        set({ user: null, isAuthenticated: false })
+        set({ user: null, isAuthenticated: false, lastIdentifier: null })
+        // Belt-and-suspenders: blow away every persisted auth blob so a
+        // subsequent sign-in starts from a truly clean slate. Without
+        // this, Zustand's `pmnh-auth` key and supabase-js's
+        // `sb-pmnh-auth` key can drift apart on the next session and
+        // produce the "isAuthenticated:true / hasSession:false" mismatch.
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.removeItem('pmnh-auth')
+            localStorage.removeItem('sb-pmnh-auth-token')
+            // Also clear any sb-* keys defensively — supabase-js can
+            // create per-instance keys in some edge cases.
+            for (const k of Object.keys(localStorage)) {
+              if (k.startsWith('sb-pmnh-auth')) localStorage.removeItem(k)
+            }
+          } catch { /* ignore */ }
+        }
       },
 
       hydrate: async () => {
