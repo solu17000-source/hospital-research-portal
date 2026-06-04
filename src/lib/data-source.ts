@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
+import { useAuthStore } from './auth-store'
 import { createClient, createFreshClient } from './supabase'
 import type {
   AIInsight, ActivityLog, DashboardStats, Department, Notification, Profile,
@@ -111,23 +112,66 @@ const EMPTY_STATS: DashboardStats = {
 // Fetch primitives — async, always return *something* sane.
 // ============================================================
 
+/**
+ * Robust departments fetcher.
+ *
+ * Operator spec:
+ *   - No timeout — departments is a tiny reference table; if it can't
+ *     resolve quickly we want the actual response (or the actual error),
+ *     not an artificial deadline.
+ *   - No shared client — every attempt builds a brand-new
+ *     `createFreshClient()` with cache-busting headers so no in-memory
+ *     client state and no HTTP cache can serve a stale rowset.
+ *   - Retry on empty / error — PostgREST sometimes serves a stale empty
+ *     rowset for a few seconds after a big DELETE+INSERT cycle. One
+ *     1-second retry collapses that window without making the user click
+ *     Refresh.
+ *   - Verbose logs — every attempt prints what came back so a stuck
+ *     dropdown is a one-glance diagnosis in DevTools instead of a
+ *     mystery.
+ *   - Errors propagate via throw so the hook's `error` state is set and
+ *     the /research/new callout can render the real Supabase message.
+ */
 export async function fetchDepartments(): Promise<Department[]> {
-  // Per operator request — no timeout, no shared client. Each call builds
-  // a fresh Supabase client (createFreshClient) with cache-busting headers,
-  // so the response can't be stale and there is no in-memory state to
-  // confuse. Errors propagate to the hook so the dropdown UI can render
-  // the real message.
-  const supabase = createFreshClient()
-  const { data, error } = await supabase
-    .from('departments')
-    .select('*')
-    .eq('is_active', true)
-    .order('research_count', { ascending: false })
-  if (error) {
-    console.error('[fetchDepartments] Supabase error:', error)
-    throw new Error(error.message || 'Supabase returned an error')
+  const MAX_ATTEMPTS = 2
+  const RETRY_DELAY_MS = 1000
+  let lastError: Error | null = null
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const supabase = createFreshClient()
+    const { data, error } = await supabase
+      .from('departments')
+      .select('*')
+      .eq('is_active', true)
+      .order('research_count', { ascending: false })
+
+    if (error) {
+      console.error(`[fetchDepartments] attempt ${attempt}/${MAX_ATTEMPTS} Supabase error:`, error)
+      lastError = new Error(error.message || 'Supabase returned an error')
+      if (attempt < MAX_ATTEMPTS) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+        continue
+      }
+      throw lastError
+    }
+
+    const rows = (data as Department[] | null) ?? []
+    console.info(`[fetchDepartments] attempt ${attempt}/${MAX_ATTEMPTS} returned ${rows.length} rows`)
+
+    if (rows.length === 0 && attempt < MAX_ATTEMPTS) {
+      console.warn(
+        `[fetchDepartments] empty rowset on attempt ${attempt} — retrying in ${RETRY_DELAY_MS}ms ` +
+        '(usually a PostgREST schema-cache lag right after a migration).',
+      )
+      await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+      continue
+    }
+
+    return rows
   }
-  return (data as Department[] | null) ?? []
+
+  // Exhausted attempts with empty rows but no Supabase error.
+  return []
 }
 
 export type ResearchQuery = {
@@ -573,8 +617,63 @@ export function useDataSource<T>(
 }
 
 /** ---------- Specialized hooks ---------- */
+/**
+ * Departments hook with explicit auth-bootstrap gate.
+ *
+ * Unlike the generic `useDataSource(fetchDepartments)` it used to be,
+ * this one:
+ *
+ *   - Reads `userId` off `useAuthStore`. Until that resolves to a UUID
+ *     (the Zustand persist plugin restores it from localStorage on mount,
+ *     so this is usually instantaneous for a signed-in user), the hook
+ *     stays in its loading state and DOES NOT fire the fetcher. That
+ *     guarantees the request never races the layout's auth bootstrap.
+ *   - Fires `fetchDepartments()` automatically the moment `userId` is
+ *     available — no Refresh-button click required on a normal page load.
+ *   - Re-fires when the refresh signal pings (so a future CRUD on
+ *     departments reflects everywhere immediately).
+ *   - Stores the thrown error from fetchDepartments so the /research/new
+ *     callout can render the real Supabase message verbatim.
+ *
+ * Departments RLS is `USING true` so the fetch itself doesn't need an
+ * authenticated JWT — the gate is defensive, not RLS-required.
+ */
 export function useDepartments() {
-  return useDataSource<Department[]>(fetchDepartments)
+  const userId = useAuthStore(s => s.user?.id ?? null)
+
+  const [data, setData] = useState<Department[] | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<Error | null>(null)
+
+  const load = useCallback(async () => {
+    setError(null)
+    setLoading(true)
+    try {
+      const rows = await fetchDepartments()
+      setData(rows)
+    } catch (e) {
+      console.error('[useDepartments] fetch threw:', e)
+      setError(e as Error)
+      setData([])
+    } finally {
+      setLoading(false)
+    }
+  }, [])
+
+  // Auto-fetch the moment we know who the user is. Until then we stay
+  // in the loading state — no fetch fires, no empty-state flash, no
+  // need for the operator to click Refresh.
+  useEffect(() => {
+    if (!userId) return
+    void load()
+  }, [userId, load])
+
+  // Mutations elsewhere ping subscribeRefresh — refetch if we're armed.
+  useEffect(() => subscribeRefresh(() => {
+    if (userId) void load()
+  }), [userId, load])
+
+  return { data, loading, error, refetch: load }
 }
 export function useResearch(opts: ResearchQuery = {}) {
   const depKey = JSON.stringify(opts)
