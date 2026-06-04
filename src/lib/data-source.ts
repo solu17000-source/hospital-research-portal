@@ -393,33 +393,100 @@ function toServerPayload(input: ResearchInput) {
   }
 }
 
+// Hardcoded project identifiers — same fallback set we use elsewhere
+// so the writer never builds a request against an empty URL when the
+// NEXT_PUBLIC env vars fail to inline at build time.
+const PMNH_SUPABASE_URL  = 'https://owcgtvobxpystflqmyij.supabase.co'
+const PMNH_SUPABASE_ANON = 'sb_publishable_bA9xnDC9Rjin5OzjGAT4kQ_sh4_4Hcx'
+
 export async function createResearch(input: ResearchInput): Promise<CreateResult<ResearchProject>> {
   if (!input.title || !input.title.trim()) {
     return { ok: false, error: 'العنوان مطلوب.' }
   }
+
+  // --- 1. Get the session token (with a hard 2s cap) -----------------
+  // Going through supabase.auth.getSession() instead of trusting the
+  // Zustand store means we use the SAME token the singleton client
+  // would attach — but we don't ship the request through supabase-js,
+  // we ship it through a raw fetch the next step. That way no internal
+  // client state can stall the insert.
   const supabase = createClient()
+  let accessToken: string | undefined
+  let userId: string | undefined
   try {
-    const auth = await ensureAuthenticated(supabase)
-    if (!auth.ok) return { ok: false, error: auth.error }
-    const payload = { ...toServerPayload(input), created_by: auth.userId }
-    const { data, error } = await withTimeout(
-      supabase
-        .from('research_projects')
-        .insert(payload)
-        .select('*')
-        .single(),
-      15_000,
-      'createResearch',
+    const { data: { session } } = await withTimeout(
+      supabase.auth.getSession(),
+      2_000,
+      'createResearch.getSession',
     )
-    if (error) {
-      console.error('[createResearch] Supabase error:', error)
-      return { ok: false, error: error.message || 'فشل الحفظ.' }
+    if (!session?.access_token) {
+      console.error('[createResearch] no session — refusing to submit')
+      return { ok: false, error: 'الجلسة منتهية — يرجى تسجيل الدخول من جديد.' }
     }
-    notifyRefresh()
-    return { ok: true, row: data as ResearchProject }
+    accessToken = session.access_token
+    userId = session.user.id
   } catch (e) {
-    console.error('[createResearch] threw:', e)
-    return { ok: false, error: (e as Error).message || 'خطأ في الشبكة.' }
+    console.error('[createResearch] getSession failed/timed out:', e)
+    return { ok: false, error: 'تعذّر الوصول للجلسة. أعد تسجيل الدخول.' }
+  }
+
+  // --- 2. Raw POST to PostgREST with the verified JWT ----------------
+  // AbortController gives us a true 10-second hard ceiling that cancels
+  // the request instead of just racing it like withTimeout does.
+  const url    = (process.env.NEXT_PUBLIC_SUPABASE_URL      || PMNH_SUPABASE_URL)  + '/rest/v1/research_projects'
+  const apikey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || PMNH_SUPABASE_ANON)
+  const payload = { ...toServerPayload(input), created_by: userId }
+
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10_000)
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        apikey,
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+        'Cache-Control': 'no-store',
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+
+    const responseText = await res.text()
+
+    if (!res.ok) {
+      console.error(`[createResearch] HTTP ${res.status}:`, responseText)
+      // PostgREST emits JSON like {message, hint, details, code} on errors.
+      try {
+        const parsed = JSON.parse(responseText) as { message?: string; hint?: string; details?: string }
+        const friendly = parsed.message || parsed.hint || parsed.details || `HTTP ${res.status}`
+        return { ok: false, error: friendly }
+      } catch {
+        return { ok: false, error: `HTTP ${res.status}: ${responseText.slice(0, 200)}` }
+      }
+    }
+
+    const rows = JSON.parse(responseText) as ResearchProject[]
+    if (!Array.isArray(rows) || rows.length === 0) {
+      console.error('[createResearch] unexpected payload shape:', responseText)
+      return { ok: false, error: 'استجابة غير متوقعة من الخادم.' }
+    }
+
+    console.info('[createResearch] saved:', rows[0].research_id, rows[0].id)
+    notifyRefresh()
+    return { ok: true, row: rows[0] }
+  } catch (e) {
+    clearTimeout(timeoutId)
+    const err = e as Error
+    if (err.name === 'AbortError') {
+      console.error('[createResearch] aborted after 10s timeout')
+      return { ok: false, error: 'انتهت المهلة (10 ثوانٍ). تحقّق من اتصالك ثم أعد المحاولة.' }
+    }
+    console.error('[createResearch] fetch threw:', err)
+    return { ok: false, error: err.message || 'خطأ في الشبكة.' }
   }
 }
 
