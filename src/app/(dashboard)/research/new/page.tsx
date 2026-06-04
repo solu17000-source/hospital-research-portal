@@ -10,6 +10,7 @@ import {
 import Link from 'next/link'
 import toast from 'react-hot-toast'
 import { createResearch, type ResearchInput } from '@/lib/data-source'
+import { createClient } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
 import { RESEARCH_CATEGORIES, WORKFLOW_STAGES, type ApprovalStatus,
   type JournalQuartile, type IndexedDatabase, type PriorityLevel,
@@ -106,7 +107,40 @@ export default function NewResearchPage() {
     if (!form.title.trim()) { toast.error('Research title is required'); return }
     if (!form.department_id) { toast.error('Department is required'); return }
 
+    console.log('[handleSave] step 1: starting save')
     setSaving(true)
+
+    // Pull the session token CLIENT-SIDE. supabase-js stores it in
+    // localStorage on this device, so this is a synchronous-ish read that
+    // never depends on the server having access to a cookie. Then we hand
+    // the token to createResearch as an explicit parameter — createResearch
+    // never calls getSession() itself.
+    console.log('[handleSave] step 2: fetching session from supabase client')
+    let accessToken: string | undefined
+    let sessionUserId: string | undefined
+    try {
+      const supabase = createClient()
+      const { data: { session }, error: sessionErr } = await supabase.auth.getSession()
+      if (sessionErr) {
+        console.error('[handleSave] getSession error:', sessionErr)
+      }
+      accessToken = session?.access_token
+      sessionUserId = session?.user.id
+      console.log('[handleSave] step 3: session result', {
+        hasToken: !!accessToken,
+        tokenLen: accessToken?.length,
+        userId: sessionUserId,
+      })
+    } catch (e) {
+      console.error('[handleSave] getSession threw:', e)
+    }
+
+    if (!accessToken || !sessionUserId) {
+      setSaving(false)
+      toast.error('انتهت الجلسة. سجّل دخول من جديد.')
+      return
+    }
+
     // Shape the wizard's flat form state into the typed write input.
     const payload: ResearchInput = {
       title: form.title.trim(),
@@ -139,14 +173,21 @@ export default function NewResearchPage() {
       created_by: user?.id,
     }
 
-    const result = await createResearch(payload)
+    console.log('[handleSave] step 4: calling createResearch with explicit token')
+    const result = await createResearch(payload, {
+      accessToken,
+      userId: sessionUserId,
+    })
+    console.log('[handleSave] step 5: createResearch returned', { ok: result.ok })
     setSaving(false)
 
     if (!result.ok) {
+      console.error('[handleSave] save failed:', result.error)
       toast.error(result.error || 'Could not save research project')
       return
     }
 
+    console.log('[handleSave] step 6: success — redirecting to', result.row.id)
     toast.success(`${result.row.research_id} created — saved to database. Redirecting…`)
     // Small delay so the user sees the toast before the route swap.
     setTimeout(() => router.push(`/research/${result.row.id}`), 900)

@@ -399,53 +399,61 @@ function toServerPayload(input: ResearchInput) {
 const PMNH_SUPABASE_URL  = 'https://owcgtvobxpystflqmyij.supabase.co'
 const PMNH_SUPABASE_ANON = 'sb_publishable_bA9xnDC9Rjin5OzjGAT4kQ_sh4_4Hcx'
 
-export async function createResearch(input: ResearchInput): Promise<CreateResult<ResearchProject>> {
+/**
+ * Two-tier insert.
+ *
+ *  - Option 1 (primary): direct POST to PostgREST with the caller's JWT
+ *    in `Authorization: Bearer …`. RLS evaluates `auth.uid()` from the
+ *    token. No session lookup inside this module — the caller has
+ *    already pulled it from supabase.auth.getSession() in the browser.
+ *
+ *  - Option 2 (fallback): on AbortController timeout, network error,
+ *    or 401/403, POST to `/api/research/create` which uses
+ *    SUPABASE_SERVICE_ROLE_KEY server-side. The route still validates
+ *    the same JWT via `auth.getUser(token)` before inserting, so the
+ *    service-role power can't be abused by a forged userId in the
+ *    request body.
+ *
+ * Both legs are bounded by a 10s AbortController so the Save button
+ * cannot sit on "Saving…" indefinitely.
+ */
+export async function createResearch(
+  input: ResearchInput,
+  opts: { accessToken: string; userId: string },
+): Promise<CreateResult<ResearchProject>> {
+  console.log('[createResearch] step 0: entered', {
+    title: input.title?.slice(0, 50),
+    hasToken: !!opts.accessToken,
+    tokenLen: opts.accessToken?.length,
+    userId: opts.userId,
+  })
+
   if (!input.title || !input.title.trim()) {
     return { ok: false, error: 'العنوان مطلوب.' }
   }
-
-  // --- 1. Get the session token (with a hard 2s cap) -----------------
-  // Going through supabase.auth.getSession() instead of trusting the
-  // Zustand store means we use the SAME token the singleton client
-  // would attach — but we don't ship the request through supabase-js,
-  // we ship it through a raw fetch the next step. That way no internal
-  // client state can stall the insert.
-  const supabase = createClient()
-  let accessToken: string | undefined
-  let userId: string | undefined
-  try {
-    const { data: { session } } = await withTimeout(
-      supabase.auth.getSession(),
-      2_000,
-      'createResearch.getSession',
-    )
-    if (!session?.access_token) {
-      console.error('[createResearch] no session — refusing to submit')
-      return { ok: false, error: 'الجلسة منتهية — يرجى تسجيل الدخول من جديد.' }
-    }
-    accessToken = session.access_token
-    userId = session.user.id
-  } catch (e) {
-    console.error('[createResearch] getSession failed/timed out:', e)
-    return { ok: false, error: 'تعذّر الوصول للجلسة. أعد تسجيل الدخول.' }
+  if (!opts.accessToken) {
+    return { ok: false, error: 'Token مفقود — يرجى تسجيل الدخول من جديد.' }
+  }
+  if (!opts.userId) {
+    return { ok: false, error: 'User id مفقود — يرجى تسجيل الدخول من جديد.' }
   }
 
-  // --- 2. Raw POST to PostgREST with the verified JWT ----------------
-  // AbortController gives us a true 10-second hard ceiling that cancels
-  // the request instead of just racing it like withTimeout does.
+  console.log('[createResearch] step 1: building payload')
+  const payload = { ...toServerPayload(input), created_by: opts.userId }
+
+  // ===== Option 1: raw POST with the user's JWT =====
+  console.log('[createResearch] step 2: trying Option 1 (raw POST + JWT)')
   const url    = (process.env.NEXT_PUBLIC_SUPABASE_URL      || PMNH_SUPABASE_URL)  + '/rest/v1/research_projects'
   const apikey = (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || PMNH_SUPABASE_ANON)
-  const payload = { ...toServerPayload(input), created_by: userId }
 
   const controller = new AbortController()
   const timeoutId = setTimeout(() => controller.abort(), 10_000)
-
   try {
     const res = await fetch(url, {
       method: 'POST',
       headers: {
         apikey,
-        Authorization: `Bearer ${accessToken}`,
+        Authorization: `Bearer ${opts.accessToken}`,
         'Content-Type': 'application/json',
         Prefer: 'return=representation',
         'Cache-Control': 'no-store',
@@ -454,39 +462,101 @@ export async function createResearch(input: ResearchInput): Promise<CreateResult
       signal: controller.signal,
     })
     clearTimeout(timeoutId)
+    console.log('[createResearch] step 3: Option 1 response status:', res.status)
 
     const responseText = await res.text()
 
-    if (!res.ok) {
-      console.error(`[createResearch] HTTP ${res.status}:`, responseText)
-      // PostgREST emits JSON like {message, hint, details, code} on errors.
-      try {
-        const parsed = JSON.parse(responseText) as { message?: string; hint?: string; details?: string }
-        const friendly = parsed.message || parsed.hint || parsed.details || `HTTP ${res.status}`
-        return { ok: false, error: friendly }
-      } catch {
-        return { ok: false, error: `HTTP ${res.status}: ${responseText.slice(0, 200)}` }
+    if (res.ok) {
+      console.log('[createResearch] step 4: parsing success body')
+      const rows = JSON.parse(responseText) as ResearchProject[]
+      if (!Array.isArray(rows) || rows.length === 0) {
+        console.error('[createResearch] step 4a: unexpected payload shape')
+        return { ok: false, error: 'استجابة غير متوقعة من الخادم.' }
       }
+      console.info('[createResearch] step 5: saved via Option 1:', rows[0].research_id, rows[0].id)
+      notifyRefresh()
+      return { ok: true, row: rows[0] }
     }
 
-    const rows = JSON.parse(responseText) as ResearchProject[]
-    if (!Array.isArray(rows) || rows.length === 0) {
-      console.error('[createResearch] unexpected payload shape:', responseText)
-      return { ok: false, error: 'استجابة غير متوقعة من الخادم.' }
+    // Non-2xx response.
+    console.error(`[createResearch] Option 1 HTTP ${res.status}:`, responseText)
+    let friendly = `HTTP ${res.status}`
+    try {
+      const parsed = JSON.parse(responseText) as { message?: string; hint?: string; details?: string }
+      friendly = parsed.message || parsed.hint || parsed.details || friendly
+    } catch {
+      friendly = responseText.slice(0, 200) || friendly
     }
 
-    console.info('[createResearch] saved:', rows[0].research_id, rows[0].id)
-    notifyRefresh()
-    return { ok: true, row: rows[0] }
+    // Auth-style failures (401/403) → try the service-role fallback.
+    // Genuine validation / RLS errors (4xx other than 401/403) bubble
+    // up as-is so the operator sees the real problem.
+    if (res.status === 401 || res.status === 403) {
+      console.warn('[createResearch] step 6: Option 1 auth failure, falling back to Option 2')
+      return await fallbackViaServiceRoute(payload, opts.accessToken, friendly)
+    }
+    return { ok: false, error: friendly }
   } catch (e) {
     clearTimeout(timeoutId)
     const err = e as Error
     if (err.name === 'AbortError') {
-      console.error('[createResearch] aborted after 10s timeout')
-      return { ok: false, error: 'انتهت المهلة (10 ثوانٍ). تحقّق من اتصالك ثم أعد المحاولة.' }
+      console.warn('[createResearch] Option 1 timed out after 10s, falling back to Option 2')
+      return await fallbackViaServiceRoute(payload, opts.accessToken, 'انتهت مهلة الطلب المباشر.')
     }
-    console.error('[createResearch] fetch threw:', err)
+    // TypeError: Failed to fetch (network / CORS) → fallback too
+    if (err.name === 'TypeError') {
+      console.warn('[createResearch] Option 1 network error, falling back to Option 2:', err.message)
+      return await fallbackViaServiceRoute(payload, opts.accessToken, err.message)
+    }
+    console.error('[createResearch] Option 1 threw:', err)
     return { ok: false, error: err.message || 'خطأ في الشبكة.' }
+  }
+}
+
+async function fallbackViaServiceRoute(
+  payload: Record<string, unknown>,
+  accessToken: string,
+  primaryError: string,
+): Promise<CreateResult<ResearchProject>> {
+  console.log('[createResearch] Option 2: POST /api/research/create')
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const res = await fetch('/api/research/create', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ payload }),
+      signal: controller.signal,
+    })
+    clearTimeout(timeoutId)
+    console.log('[createResearch] Option 2 response status:', res.status)
+
+    const text = await res.text()
+    if (!res.ok) {
+      console.error('[createResearch] Option 2 HTTP', res.status, text)
+      let msg = `HTTP ${res.status}`
+      try {
+        const parsed = JSON.parse(text) as { error?: string }
+        msg = parsed.error || msg
+      } catch { msg = text.slice(0, 200) || msg }
+      // Surface BOTH the primary failure AND the fallback failure so the
+      // operator can see what was actually wrong.
+      return { ok: false, error: `Primary: ${primaryError}. Fallback: ${msg}` }
+    }
+    const parsed = JSON.parse(text) as { row: ResearchProject }
+    console.info('[createResearch] saved via Option 2:', parsed.row.research_id, parsed.row.id)
+    notifyRefresh()
+    return { ok: true, row: parsed.row }
+  } catch (e) {
+    clearTimeout(timeoutId)
+    const err = e as Error
+    if (err.name === 'AbortError') {
+      return { ok: false, error: `Primary: ${primaryError}. Fallback: انتهت المهلة.` }
+    }
+    return { ok: false, error: `Primary: ${primaryError}. Fallback: ${err.message}` }
   }
 }
 
