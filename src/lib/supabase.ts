@@ -53,6 +53,38 @@ export function createClient() {
   return _browserClient
 }
 
+/**
+ * Cache-busting one-shot client.
+ *
+ * Builds a brand-new `createBrowserClient` per call (NOT the singleton),
+ * with the auth-store interactions disabled and an `X-Cache-Bust` header
+ * carrying the current epoch ms. Used by fetchers where the operator wants
+ * to be 100% sure the response is fresh — bypassing any potential
+ * client-instance state and tagging the request so intermediate proxies
+ * can't serve a cached body.
+ *
+ * Trade-off: every call sets up new socket/HTTP state, so this is slower
+ * than the singleton on a per-request basis. Only worth it for the small
+ * reference tables (departments) where stale data has been a persistent
+ * pain point.
+ */
+export function createFreshClient() {
+  return createBrowserClient(supabaseUrl ?? '', supabaseAnonKey ?? '', {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      headers: {
+        'X-Cache-Bust': String(Date.now()),
+        'Cache-Control': 'no-cache, no-store, must-revalidate',
+        Pragma: 'no-cache',
+      },
+    },
+  })
+}
+
 export function createServerClient(cookieStore: {
   get(name: string): { value: string } | undefined
   set(name: string, value: string, options: CookieOptions): void

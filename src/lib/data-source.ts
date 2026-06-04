@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { createClient } from './supabase'
+import { createClient, createFreshClient } from './supabase'
 import type {
   AIInsight, ActivityLog, DashboardStats, Department, Notification, Profile,
   ResearchProject,
@@ -112,23 +112,17 @@ const EMPTY_STATS: DashboardStats = {
 // ============================================================
 
 export async function fetchDepartments(): Promise<Department[]> {
-  const supabase = createClient()
-  // Departments propagates Supabase errors to the hook (instead of
-  // swallowing them with `return []`). That lets the dropdown in
-  // /research/new render the real error message — "JWT expired", "Failed
-  // to fetch", "permission denied for table departments", whatever —
-  // rather than a generic empty state that gives no diagnostic. Other
-  // fetchers still swallow because their consumers don't have a useful
-  // place to surface the error.
-  const { data, error } = await withTimeout(
-    supabase
-      .from('departments')
-      .select('*')
-      .eq('is_active', true)
-      .order('research_count', { ascending: false }),
-    10_000,
-    'fetchDepartments',
-  )
+  // Per operator request — no timeout, no shared client. Each call builds
+  // a fresh Supabase client (createFreshClient) with cache-busting headers,
+  // so the response can't be stale and there is no in-memory state to
+  // confuse. Errors propagate to the hook so the dropdown UI can render
+  // the real message.
+  const supabase = createFreshClient()
+  const { data, error } = await supabase
+    .from('departments')
+    .select('*')
+    .eq('is_active', true)
+    .order('research_count', { ascending: false })
   if (error) {
     console.error('[fetchDepartments] Supabase error:', error)
     throw new Error(error.message || 'Supabase returned an error')
