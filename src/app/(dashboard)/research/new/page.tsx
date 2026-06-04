@@ -10,7 +10,6 @@ import {
 import Link from 'next/link'
 import toast from 'react-hot-toast'
 import { createResearch, type ResearchInput } from '@/lib/data-source'
-import { createClient } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
 import { RESEARCH_CATEGORIES, WORKFLOW_STAGES, type ApprovalStatus,
   type JournalQuartile, type IndexedDatabase, type PriorityLevel,
@@ -31,22 +30,44 @@ export default function NewResearchPage() {
   const router = useRouter()
   const { user } = useAuthStore()
 
-  // Direct, no-abstraction Supabase fetch for the Department dropdown.
-  // No hook, no useDataSource, no withTimeout, no auth gate, no retry —
-  // exactly the operator's "final fix" spec. departments_public_read is
-  // `USING true` so the SELECT works for any role, signed-in or not.
+  // Department dropdown — raw fetch to the Supabase REST endpoint,
+  // bypassing supabase-js entirely. The diagnostic run from the browser
+  // console confirmed the API itself returns 200 + 19 rows; the issue
+  // was in the singleton supabase-js client. Going straight to fetch()
+  // with the anon key as both apikey + Bearer makes this immune to any
+  // client-state oddities.
+  //
+  // The Supabase URL is hardcoded so it can't end up empty at build
+  // time. The anon key is publishable by design (RLS protects the data)
+  // and arrives via process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY, inlined
+  // by Next.js at build.
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([])
   useEffect(() => {
-    const client = createClient()
-    client
-      .from('departments')
-      .select('id, name')
-      .eq('is_active', true)
-      .order('name')
-      .then(({ data, error }) => {
-        if (error) console.error('dept error:', error)
-        else setDepartments(data || [])
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? ''
+    fetch(
+      'https://owcgtvobxpystflqmyij.supabase.co/rest/v1/departments?is_active=eq.true&order=name&select=id,name',
+      {
+        headers: {
+          apikey: anonKey,
+          Authorization: `Bearer ${anonKey}`,
+        },
+        cache: 'no-store',
+      },
+    )
+      .then(async res => {
+        if (!res.ok) {
+          console.error('dept fetch HTTP', res.status, await res.text())
+          return
+        }
+        const data = await res.json()
+        if (Array.isArray(data)) {
+          console.info(`[departments] fetched ${data.length} rows`)
+          setDepartments(data)
+        } else {
+          console.error('dept fetch unexpected payload:', data)
+        }
       })
+      .catch(err => console.error('dept fetch threw:', err))
   }, [])
 
   const [step, setStep] = useState(1)
