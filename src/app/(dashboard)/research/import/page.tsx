@@ -445,8 +445,9 @@ export default function ImportResearchPage() {
   async function commit() {
     const validInputs = parsedRows.filter(r => r.errors.length === 0).map(r => r.input)
     if (validInputs.length === 0) { toast.error('No valid rows to import.'); return }
+    if (!user?.id) { toast.error('انتهت الجلسة. سجّل دخول من جديد.'); return }
     setIsImporting(true)
-    const r = await createResearchBulk(validInputs)
+    const r = await createResearchBulk(validInputs, user.id)
     setIsImporting(false)
     setResult(r)
     setStage('committed')

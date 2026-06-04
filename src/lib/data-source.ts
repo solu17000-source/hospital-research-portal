@@ -1,34 +1,149 @@
 'use client'
 
 /**
- * Data source — every collection is fetched from Supabase, full stop.
+ * Data source — every read AND every write goes through raw `fetch()`
+ * straight to PostgREST, NOT through supabase-js.
  *
- * There is no demo-mode branch, no DEMO_* fallback, no localStorage shim.
- * If Supabase returns an error or an empty rowset, the caller gets `[]`
- * (or zeroed stats / `null`) and the UI shows its empty state. This
- * eliminates the class of bugs where the page silently rendered 8 ghost
- * rows from `DEMO_RESEARCH` while the live database had 16.
+ * Why: the supabase-js singleton client was observed to hang
+ * indefinitely on this deployment for both reads and writes (the same
+ * raw fetch with the same URL + apikey + JWT works in <1s). Bypassing
+ * the library entirely sidesteps every internal-state edge case in
+ * one move.
  *
- * Two APIs per collection:
- *
- *   • `fetch*`  — plain async function, usable from server actions / RSC.
- *   • `use*`    — thin React hook returning `{data, loading, error, refetch}`.
- *                Subscribes to the global refresh signal so the UI updates
- *                instantly after any successful mutation, no manual reload.
+ * The JWT comes from the Zustand `useAuthStore` — login stamps it at
+ * sign-in time, persist restores it across reloads. No `getSession()`
+ * call anywhere in this module.
  */
 
 import { useCallback, useEffect, useState } from 'react'
 
-import { createClient } from './supabase'
+import { useAuthStore } from './auth-store'
 import type {
   AIInsight, ActivityLog, DashboardStats, Department, Notification, Profile,
   ResearchProject,
 } from '@/types'
 
 // ============================================================
+// PostgREST plumbing — raw fetch with the user's JWT
+// ============================================================
+
+const PMNH_SUPABASE_URL  = 'https://owcgtvobxpystflqmyij.supabase.co'
+const PMNH_SUPABASE_ANON = 'sb_publishable_bA9xnDC9Rjin5OzjGAT4kQ_sh4_4Hcx'
+
+/** Pull the bearer token Zustand persisted at login. Falls back to the
+ *  anon key so anonymous reads (departments etc.) still work pre-login. */
+function bearerToken(): string {
+  const fromStore = useAuthStore.getState().accessToken
+  if (fromStore) return fromStore
+  // Defensive: try the supabase-js localStorage key in case the Zustand
+  // persist hasn't rehydrated yet on first paint.
+  if (typeof window !== 'undefined') {
+    try {
+      for (const key of Object.keys(localStorage)) {
+        if (key.startsWith('sb-pmnh-auth')) {
+          const raw = localStorage.getItem(key)
+          if (raw) {
+            const parsed = JSON.parse(raw) as { access_token?: string }
+            if (parsed?.access_token) return parsed.access_token
+          }
+        }
+      }
+    } catch { /* ignore */ }
+  }
+  return PMNH_SUPABASE_ANON
+}
+
+function authHeaders(extra?: Record<string, string>): Record<string, string> {
+  return {
+    apikey: PMNH_SUPABASE_ANON,
+    Authorization: `Bearer ${bearerToken()}`,
+    'Cache-Control': 'no-store',
+    ...extra,
+  }
+}
+
+type RestOk<T>   = { ok: true; data: T }
+type RestErr     = { ok: false; error: string; status?: number }
+type RestResult<T> = RestOk<T> | RestErr
+
+async function pmnhRest<T>(
+  path: string,
+  init: RequestInit & { timeoutMs?: number } = {},
+): Promise<RestResult<T>> {
+  const timeoutMs = init.timeoutMs ?? 10_000
+  const controller = new AbortController()
+  const tid = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${PMNH_SUPABASE_URL}/rest/v1/${path}`, {
+      ...init,
+      headers: authHeaders(init.headers as Record<string, string> | undefined),
+      signal: controller.signal,
+    })
+    clearTimeout(tid)
+
+    const text = await res.text()
+    if (!res.ok) {
+      console.error(`[pmnhRest] HTTP ${res.status} for ${path}:`, text.slice(0, 300))
+      let msg = `HTTP ${res.status}`
+      try {
+        const parsed = JSON.parse(text) as { message?: string; hint?: string; details?: string }
+        msg = parsed.message || parsed.hint || parsed.details || msg
+      } catch { msg = text.slice(0, 200) || msg }
+      return { ok: false, error: msg, status: res.status }
+    }
+
+    if (!text) return { ok: true, data: null as T }
+    try {
+      return { ok: true, data: JSON.parse(text) as T }
+    } catch {
+      return { ok: false, error: 'Invalid JSON in response' }
+    }
+  } catch (e) {
+    clearTimeout(tid)
+    const err = e as Error
+    if (err.name === 'AbortError') {
+      console.error(`[pmnhRest] ${path} aborted after ${timeoutMs}ms`)
+      return { ok: false, error: `انتهت المهلة (${timeoutMs / 1000} ثوانٍ).` }
+    }
+    console.error(`[pmnhRest] ${path} threw:`, err)
+    return { ok: false, error: err.message || 'خطأ في الشبكة.' }
+  }
+}
+
+/** HEAD count query — reads the total from PostgREST's Content-Range. */
+async function pmnhCount(
+  pathAndFilters: string,
+  timeoutMs = 10_000,
+): Promise<number> {
+  const controller = new AbortController()
+  const tid = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(`${PMNH_SUPABASE_URL}/rest/v1/${pathAndFilters}`, {
+      method: 'HEAD',
+      headers: authHeaders({ Prefer: 'count=exact' }),
+      signal: controller.signal,
+    })
+    clearTimeout(tid)
+    if (!res.ok) {
+      console.error(`[pmnhCount] HTTP ${res.status} for ${pathAndFilters}`)
+      return 0
+    }
+    const range = res.headers.get('Content-Range')  // e.g. "*/19" or "0-0/19"
+    if (!range) return 0
+    const slash = range.indexOf('/')
+    if (slash < 0) return 0
+    const total = parseInt(range.slice(slash + 1), 10)
+    return Number.isFinite(total) ? total : 0
+  } catch (e) {
+    clearTimeout(tid)
+    console.error(`[pmnhCount] threw for ${pathAndFilters}:`, e)
+    return 0
+  }
+}
+
+// ============================================================
 // Refresh signal — pinged by every successful mutation so every
-// active `useDataSource` hook refetches and the UI updates instantly
-// without manual reload.
+// active `useDataSource` hook refetches and the UI updates instantly.
 // ============================================================
 const refreshSubscribers = new Set<() => void>()
 export function subscribeRefresh(cb: () => void): () => void {
@@ -42,50 +157,7 @@ function notifyRefresh(): void {
 }
 
 // ============================================================
-// Race utility — bounds every Supabase call so a hung fetch can't
-// leave the UI's "Saving…" state stuck forever.
-// ============================================================
-function withTimeout<T>(p: PromiseLike<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
-    Promise.resolve(p).then(
-      v => { clearTimeout(timer); resolve(v) },
-      e => { clearTimeout(timer); reject(e) },
-    )
-  })
-}
-
-// ============================================================
-// Auth hydration — forces the supabase-js auth state into memory
-// from cookies BEFORE we make a write. Skipping this was the root
-// cause of `auth.uid()` coming back null inside RLS policies.
-// ============================================================
-async function ensureAuthenticated(
-  supabase: ReturnType<typeof createClient>,
-): Promise<{ ok: true; userId: string } | { ok: false; error: string }> {
-  try {
-    const { data: { session }, error } = await supabase.auth.getSession()
-    if (error) {
-      console.error('[ensureAuthenticated] getSession error:', error)
-      return { ok: false, error: error.message }
-    }
-    if (!session?.user) {
-      const { data: refreshed } = await supabase.auth.refreshSession()
-      if (!refreshed?.session?.user) {
-        return { ok: false, error: 'الجلسة منتهية — يرجى تسجيل الدخول من جديد.' }
-      }
-      return { ok: true, userId: refreshed.session.user.id }
-    }
-    return { ok: true, userId: session.user.id }
-  } catch (e) {
-    console.error('[ensureAuthenticated] threw:', e)
-    return { ok: false, error: (e as Error).message }
-  }
-}
-
-// ============================================================
-// Empty fallbacks — used when Supabase returns nothing OR errors.
-// Never demo data. The UI surfaces a real empty state instead.
+// Empty fallbacks
 // ============================================================
 const EMPTY_STATS: DashboardStats = {
   total_projects: 0,
@@ -108,38 +180,20 @@ const EMPTY_STATS: DashboardStats = {
 }
 
 // ============================================================
-// Fetch primitives — async, always return *something* sane.
+// Fetchers — all raw fetch, no supabase-js, no getSession
 // ============================================================
 
-/**
- * Departments fetcher — simplest possible direct query.
- *
- * Per operator spec:
- *   - No timeout wrapper.
- *   - Direct query against the shared client — no special client, no
- *     extra headers, no abstractions.
- *   - Ordered by name so the dropdown reads alphabetically.
- *   - Errors are logged and the function returns []; the page's
- *     existing empty-state callout will tell the operator to check
- *     the console.
- *
- * The departments table has RLS policy `USING true` so this read works
- * for both authenticated and anonymous sessions — no auth bootstrap
- * wait is required.
- */
 export async function fetchDepartments(): Promise<Department[]> {
-  const supabase = createClient()
-  const { data, error } = await supabase
-    .from('departments')
-    .select('*')
-    .eq('is_active', true)
-    .order('name')
-  if (error) {
-    console.error('[fetchDepartments] Supabase error:', error)
+  console.log('[fetchDepartments] raw fetch')
+  const r = await pmnhRest<Department[]>(
+    'departments?is_active=eq.true&order=name&select=*',
+  )
+  if (!r.ok) {
+    console.error('[fetchDepartments]', r.error)
     return []
   }
-  console.info(`[fetchDepartments] returned ${(data ?? []).length} rows`)
-  return (data as Department[] | null) ?? []
+  console.info(`[fetchDepartments] returned ${(r.data ?? []).length} rows`)
+  return r.data ?? []
 }
 
 export type ResearchQuery = {
@@ -150,160 +204,108 @@ export type ResearchQuery = {
 }
 
 export async function fetchResearch(opts: ResearchQuery = {}): Promise<ResearchProject[]> {
-  const supabase = createClient()
-  try {
-    let q = supabase
-      .from('research_projects')
-      .select('*')
-      .eq('is_archived', false)
-      .order('updated_at', { ascending: false })
-    if (opts.departmentId) q = q.eq('department_id', opts.departmentId)
-    if (opts.status)       q = q.eq('status', opts.status)
-    if (opts.publicOnly)   q = q.eq('is_public', true)
-    if (opts.limit)        q = q.limit(opts.limit)
-    const { data, error } = await withTimeout(q, 10_000, 'fetchResearch')
-    if (error) {
-      console.error('[fetchResearch] Supabase error:', error)
-      return []
-    }
-    return (data as ResearchProject[] | null) ?? []
-  } catch (e) {
-    console.error('[fetchResearch] threw:', e)
+  console.log('[fetchResearch] raw fetch', opts)
+  let qs = 'is_archived=eq.false&order=updated_at.desc&select=*'
+  if (opts.departmentId) qs += `&department_id=eq.${encodeURIComponent(opts.departmentId)}`
+  if (opts.status)       qs += `&status=eq.${encodeURIComponent(opts.status)}`
+  if (opts.publicOnly)   qs += '&is_public=eq.true'
+  if (opts.limit)        qs += `&limit=${opts.limit}`
+  const r = await pmnhRest<ResearchProject[]>(`research_projects?${qs}`)
+  if (!r.ok) {
+    console.error('[fetchResearch]', r.error)
     return []
   }
+  console.info(`[fetchResearch] returned ${(r.data ?? []).length} rows`)
+  return r.data ?? []
 }
 
 export async function fetchResearchById(id: string): Promise<ResearchProject | null> {
-  const supabase = createClient()
-  try {
-    const { data, error } = await withTimeout(
-      supabase.from('research_projects').select('*').eq('id', id).maybeSingle(),
-      10_000,
-      'fetchResearchById',
-    )
-    if (error) {
-      console.error('[fetchResearchById] Supabase error:', error)
-      return null
-    }
-    return (data as ResearchProject | null) ?? null
-  } catch (e) {
-    console.error('[fetchResearchById] threw:', e)
+  const r = await pmnhRest<ResearchProject[]>(
+    `research_projects?id=eq.${encodeURIComponent(id)}&select=*&limit=1`,
+  )
+  if (!r.ok) {
+    console.error('[fetchResearchById]', r.error)
     return null
   }
+  return r.data?.[0] ?? null
 }
 
 export async function fetchUsers(): Promise<Profile[]> {
-  const supabase = createClient()
-  try {
-    const { data, error } = await withTimeout(
-      supabase.from('profiles').select('*').order('created_at', { ascending: false }),
-      10_000,
-      'fetchUsers',
-    )
-    if (error) {
-      console.error('[fetchUsers] Supabase error:', error)
-      return []
-    }
-    return (data as Profile[] | null) ?? []
-  } catch (e) {
-    console.error('[fetchUsers] threw:', e)
+  const r = await pmnhRest<Profile[]>('profiles?order=created_at.desc&select=*')
+  if (!r.ok) {
+    console.error('[fetchUsers]', r.error)
     return []
   }
+  return r.data ?? []
 }
 
 export async function fetchNotifications(userId?: string, limit = 20): Promise<Notification[]> {
-  const supabase = createClient()
-  try {
-    let q = supabase
-      .from('notifications')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(limit)
-    if (userId) q = q.eq('user_id', userId)
-    const { data, error } = await withTimeout(q, 10_000, 'fetchNotifications')
-    if (error) {
-      console.error('[fetchNotifications] Supabase error:', error)
-      return []
-    }
-    return (data as Notification[] | null) ?? []
-  } catch (e) {
-    console.error('[fetchNotifications] threw:', e)
+  let qs = `order=created_at.desc&limit=${limit}&select=*`
+  if (userId) qs = `user_id=eq.${encodeURIComponent(userId)}&${qs}`
+  const r = await pmnhRest<Notification[]>(`notifications?${qs}`)
+  if (!r.ok) {
+    console.error('[fetchNotifications]', r.error)
     return []
   }
+  console.info(`[fetchNotifications] returned ${(r.data ?? []).length} rows`)
+  return r.data ?? []
 }
 
 export async function fetchActivityLogs(limit = 50): Promise<ActivityLog[]> {
-  const supabase = createClient()
-  try {
-    const { data, error } = await withTimeout(
-      supabase.from('activity_logs').select('*').order('created_at', { ascending: false }).limit(limit),
-      10_000,
-      'fetchActivityLogs',
-    )
-    if (error) {
-      console.error('[fetchActivityLogs] Supabase error:', error)
-      return []
-    }
-    return (data as ActivityLog[] | null) ?? []
-  } catch (e) {
-    console.error('[fetchActivityLogs] threw:', e)
+  const r = await pmnhRest<ActivityLog[]>(
+    `activity_logs?order=created_at.desc&limit=${limit}&select=*`,
+  )
+  if (!r.ok) {
+    console.error('[fetchActivityLogs]', r.error)
     return []
   }
+  return r.data ?? []
 }
 
 export async function fetchAiInsights(): Promise<AIInsight[]> {
-  // AI insights are computed, not stored. Returning [] until a real
-  // analytics service is wired — the page will render its empty state.
+  // AI insights are computed, not stored.
   return []
 }
 
-/**
- * Aggregate dashboard stats via head-only count queries (cheap).
- * Every count returns 0 on error and the UI surfaces zeros instead of
- * silently leaking fabricated demo numbers.
- */
 export async function fetchStats(): Promise<DashboardStats> {
-  const supabase = createClient()
+  console.log('[fetchStats] running 14 parallel HEAD counts')
   try {
     const [
       total, active, completed, delayed, published, pendingIrb, q1, q2, q3, q4, openAccess,
-      totalDepartments, totalUsers, fundedProjects,
-    ] = await withTimeout(
-      Promise.all([
-        countWhere(supabase, 'research_projects'),
-        countWhere(supabase, 'research_projects', { status: 'active' }),
-        countWhere(supabase, 'research_projects', { status: 'completed' }),
-        countWhere(supabase, 'research_projects', { status: 'delayed' }),
-        countWhere(supabase, 'research_projects', { publication_status: 'published' }),
-        countWhere(supabase, 'research_projects', { irb_approval_status: 'pending' }),
-        countWhere(supabase, 'research_projects', { journal_quartile: 'Q1' }),
-        countWhere(supabase, 'research_projects', { journal_quartile: 'Q2' }),
-        countWhere(supabase, 'research_projects', { journal_quartile: 'Q3' }),
-        countWhere(supabase, 'research_projects', { journal_quartile: 'Q4' }),
-        countWhere(supabase, 'research_projects', { is_open_access: true }),
-        countWhere(supabase, 'departments', { is_active: true }),
-        countWhere(supabase, 'profiles', { is_active: true }),
-        countWhere(supabase, 'research_projects', { funding_source: { _not_null: true } }),
-      ]),
-      15_000,
-      'fetchStats',
-    )
+      totalDepts, totalUsers, fundedProjects,
+    ] = await Promise.all([
+      pmnhCount('research_projects?is_archived=eq.false'),
+      pmnhCount('research_projects?status=eq.active'),
+      pmnhCount('research_projects?status=eq.completed'),
+      pmnhCount('research_projects?status=eq.delayed'),
+      pmnhCount('research_projects?publication_status=eq.published'),
+      pmnhCount('research_projects?irb_approval_status=eq.pending'),
+      pmnhCount('research_projects?journal_quartile=eq.Q1'),
+      pmnhCount('research_projects?journal_quartile=eq.Q2'),
+      pmnhCount('research_projects?journal_quartile=eq.Q3'),
+      pmnhCount('research_projects?journal_quartile=eq.Q4'),
+      pmnhCount('research_projects?is_open_access=eq.true'),
+      pmnhCount('departments?is_active=eq.true'),
+      pmnhCount('profiles?is_active=eq.true'),
+      pmnhCount('research_projects?funding_source=not.is.null'),
+    ])
+    console.info(`[fetchStats] total=${total} active=${active} dept=${totalDepts}`)
     return {
       ...EMPTY_STATS,
-      total_projects: total ?? 0,
-      active_projects: active ?? 0,
-      completed_projects: completed ?? 0,
-      delayed_projects: delayed ?? 0,
-      published_papers: published ?? 0,
-      pending_irb: pendingIrb ?? 0,
-      q1_publications: q1 ?? 0,
-      q2_publications: q2 ?? 0,
-      q3_publications: q3 ?? 0,
-      q4_publications: q4 ?? 0,
-      open_access_count: openAccess ?? 0,
-      total_departments: totalDepartments ?? 0,
-      total_users: totalUsers ?? 0,
-      funded_projects: fundedProjects ?? 0,
+      total_projects: total,
+      active_projects: active,
+      completed_projects: completed,
+      delayed_projects: delayed,
+      published_papers: published,
+      pending_irb: pendingIrb,
+      q1_publications: q1,
+      q2_publications: q2,
+      q3_publications: q3,
+      q4_publications: q4,
+      open_access_count: openAccess,
+      total_departments: totalDepts,
+      total_users: totalUsers,
+      funded_projects: fundedProjects,
     }
   } catch (e) {
     console.error('[fetchStats] threw:', e)
@@ -311,32 +313,10 @@ export async function fetchStats(): Promise<DashboardStats> {
   }
 }
 
-/** Tiny helper — head-only count with an arbitrary equality filter set. */
-async function countWhere(
-  client: ReturnType<typeof createClient>,
-  table: string,
-  where?: Record<string, unknown>,
-): Promise<number | null> {
-  let q = client.from(table).select('id', { count: 'exact', head: true })
-  if (where) {
-    for (const [k, v] of Object.entries(where)) {
-      if (v && typeof v === 'object' && '_not_null' in (v as Record<string, unknown>)) {
-        q = q.not(k, 'is', null)
-      } else {
-        q = q.eq(k, v as string | number | boolean)
-      }
-    }
-  }
-  const { count } = await q
-  return count ?? null
-}
-
 // ============================================================
-// Writes (research)
+// Writers — research_projects
 // ============================================================
 
-/** What callers hand us — the schema fields they're allowed to set.
- *  `research_id`, timestamps, `is_archived` and audit fields are derived. */
 export type ResearchInput = Partial<Omit<ResearchProject,
   'id' | 'research_id' | 'created_at' | 'updated_at' | 'is_archived' | 'citation_count'
 >> & { title: string }
@@ -349,8 +329,6 @@ export type BulkResult = {
   errors: { row: number; error: string; title?: string }[]
 }
 
-/** Postgres `uuid` columns reject anything that isn't a 128-bit hex
- *  formatted as 8-4-4-4-12. Coerce anything else to null. */
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 function uuidOrNull(v?: string | null): string | null {
   if (!v) return null
@@ -393,26 +371,6 @@ function toServerPayload(input: ResearchInput) {
   }
 }
 
-// Hardcoded project identifiers — same fallback set we use elsewhere
-// so the writer never builds a request against an empty URL when the
-// NEXT_PUBLIC env vars fail to inline at build time.
-const PMNH_SUPABASE_URL  = 'https://owcgtvobxpystflqmyij.supabase.co'
-const PMNH_SUPABASE_ANON = 'sb_publishable_bA9xnDC9Rjin5OzjGAT4kQ_sh4_4Hcx'
-
-/**
- * Insert a research project.
- *
- * NEVER calls `supabase.auth.getSession()`. The browser console trace
- * proved that call hangs indefinitely in this deployment. Instead we
- * trust the operator-supplied userId (read directly off the Zustand
- * auth-store by the caller) and let the singleton supabase-js client
- * attach its already-cached JWT to the insert. autoRefreshToken=true
- * keeps that cached token fresh in the background.
- *
- * Bounded by an 8-second Promise.race so the Save button cannot sit
- * on "Saving…" forever — if the underlying request is stuck the race
- * rejects and the page gets a clear error to toast.
- */
 export async function createResearch(
   input: ResearchInput,
   userId: string,
@@ -421,164 +379,148 @@ export async function createResearch(
     title: input.title?.slice(0, 50),
     userId,
   })
+  if (!input.title?.trim()) return { ok: false, error: 'العنوان مطلوب.' }
+  if (!userId)              return { ok: false, error: 'User id مفقود.' }
 
-  if (!input.title || !input.title.trim()) {
-    return { ok: false, error: 'العنوان مطلوب.' }
-  }
-  if (!userId) {
-    return { ok: false, error: 'User id مفقود — يرجى تسجيل الدخول من جديد.' }
+  const token = useAuthStore.getState().accessToken
+  if (!token) {
+    console.error('[createResearch] no accessToken in store — refusing to submit')
+    return { ok: false, error: 'انتهت الجلسة. سجّل دخول من جديد.' }
   }
 
   console.log('[createResearch] step 1: building payload')
   const payload = { ...toServerPayload(input), created_by: userId }
 
-  console.log('[createResearch] step 2: insert via singleton (no getSession)')
-  const supabase = createClient()
-
-  const insertPromise = supabase
-    .from('research_projects')
-    .insert(payload)
-    .select('*')
-    .single()
-
-  const timeoutPromise = new Promise<never>((_, reject) =>
-    setTimeout(() => reject(new Error('انتهت المهلة (8 ثوانٍ). تحقّق من الاتصال ثم أعد المحاولة.')), 8_000),
+  console.log('[createResearch] step 2: raw POST /rest/v1/research_projects')
+  const r = await pmnhRest<ResearchProject[]>(
+    'research_projects',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify(payload),
+      timeoutMs: 8_000,
+    },
   )
-
-  try {
-    const result = await Promise.race([insertPromise, timeoutPromise])
-    console.log('[createResearch] step 3: response received', {
-      hasError: !!result.error,
-      hasData: !!result.data,
-    })
-
-    if (result.error) {
-      console.error('[createResearch] Supabase error:', result.error)
-      return { ok: false, error: result.error.message || 'فشل الحفظ.' }
-    }
-    if (!result.data) {
-      console.error('[createResearch] empty data')
-      return { ok: false, error: 'لم تُرجَع بيانات من الخادم.' }
-    }
-
-    console.info('[createResearch] step 4: saved:', result.data.research_id, result.data.id)
-    notifyRefresh()
-    return { ok: true, row: result.data as ResearchProject }
-  } catch (e) {
-    console.error('[createResearch] race rejected / threw:', e)
-    return { ok: false, error: (e as Error).message || 'خطأ في الشبكة.' }
+  if (!r.ok) {
+    console.error('[createResearch] failed:', r.error)
+    return { ok: false, error: r.error }
   }
+  const rows = r.data
+  if (!Array.isArray(rows) || rows.length === 0) {
+    console.error('[createResearch] empty payload')
+    return { ok: false, error: 'لم تُرجَع بيانات من الخادم.' }
+  }
+  console.info('[createResearch] step 4: saved:', rows[0].research_id, rows[0].id)
+  notifyRefresh()
+  return { ok: true, row: rows[0] }
 }
 
 export async function updateResearch(
   id: string,
   patch: Partial<ResearchInput>,
+  userId: string,
 ): Promise<CreateResult<ResearchProject>> {
-  const supabase = createClient()
-  try {
-    const auth = await ensureAuthenticated(supabase)
-    if (!auth.ok) return { ok: false, error: auth.error }
+  console.log('[updateResearch] entered', { id, userId })
+  if (!userId) return { ok: false, error: 'User id مفقود.' }
 
-    const fullInput: ResearchInput = { title: '', ...patch }
-    const fullPayload = toServerPayload(fullInput)
-    const payload: Record<string, unknown> = {}
-    for (const k of Object.keys(patch)) {
-      if (k in fullPayload) payload[k] = (fullPayload as Record<string, unknown>)[k]
-    }
-    payload.updated_at = new Date().toISOString()
-    payload.updated_by = auth.userId
-
-    const { data, error } = await withTimeout(
-      supabase
-        .from('research_projects')
-        .update(payload)
-        .eq('id', id)
-        .select('*')
-        .single(),
-      15_000,
-      'updateResearch',
-    )
-    if (error) {
-      console.error('[updateResearch] Supabase error:', error)
-      return { ok: false, error: error.message || 'فشل التحديث.' }
-    }
-    notifyRefresh()
-    return { ok: true, row: data as ResearchProject }
-  } catch (e) {
-    console.error('[updateResearch] threw:', e)
-    return { ok: false, error: (e as Error).message || 'خطأ في الشبكة.' }
+  const fullInput: ResearchInput = { title: '', ...patch }
+  const fullPayload = toServerPayload(fullInput)
+  const update: Record<string, unknown> = {}
+  for (const k of Object.keys(patch)) {
+    if (k in fullPayload) update[k] = (fullPayload as Record<string, unknown>)[k]
   }
+  update.updated_at = new Date().toISOString()
+  update.updated_by = userId
+
+  const r = await pmnhRest<ResearchProject[]>(
+    `research_projects?id=eq.${encodeURIComponent(id)}`,
+    {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify(update),
+      timeoutMs: 8_000,
+    },
+  )
+  if (!r.ok) {
+    console.error('[updateResearch] failed:', r.error)
+    return { ok: false, error: r.error }
+  }
+  if (!Array.isArray(r.data) || r.data.length === 0) {
+    return { ok: false, error: 'لم تُرجَع بيانات.' }
+  }
+  console.info('[updateResearch] saved:', r.data[0].id)
+  notifyRefresh()
+  return { ok: true, row: r.data[0] }
 }
 
 export async function deleteResearch(
   id: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const supabase = createClient()
-  try {
-    const auth = await ensureAuthenticated(supabase)
-    if (!auth.ok) return { ok: false, error: auth.error }
-    const { error } = await withTimeout(
-      supabase.from('research_projects').delete().eq('id', id),
-      15_000,
-      'deleteResearch',
-    )
-    if (error) {
-      console.error('[deleteResearch] Supabase error:', error)
-      return { ok: false, error: error.message || 'فشل الحذف.' }
-    }
-    notifyRefresh()
-    return { ok: true }
-  } catch (e) {
-    console.error('[deleteResearch] threw:', e)
-    return { ok: false, error: (e as Error).message || 'خطأ في الشبكة.' }
+  console.log('[deleteResearch] entered', { id })
+  const r = await pmnhRest<unknown>(
+    `research_projects?id=eq.${encodeURIComponent(id)}`,
+    { method: 'DELETE', timeoutMs: 8_000 },
+  )
+  if (!r.ok) {
+    console.error('[deleteResearch] failed:', r.error)
+    return { ok: false, error: r.error }
   }
+  console.info('[deleteResearch] deleted', id)
+  notifyRefresh()
+  return { ok: true }
 }
 
-export async function createResearchBulk(inputs: ResearchInput[]): Promise<BulkResult> {
+export async function createResearchBulk(
+  inputs: ResearchInput[],
+  userId: string,
+): Promise<BulkResult> {
+  console.log('[createResearchBulk] entered, count:', inputs.length, 'userId:', userId)
   const result: BulkResult = { ok: 0, failed: 0, rows: [], errors: [] }
-  const supabase = createClient()
-  try {
-    const valid: ResearchInput[] = []
-    inputs.forEach((input, i) => {
-      if (input.title?.trim()) valid.push(input)
-      else {
-        result.failed++
-        result.errors.push({ row: i + 2, error: 'عنوان مفقود', title: input.title })
-      }
-    })
-    if (valid.length === 0) return result
 
-    const auth = await ensureAuthenticated(supabase)
-    if (!auth.ok) {
-      result.failed += valid.length
-      result.errors.push({ row: 0, error: auth.error })
-      return result
+  const valid: ResearchInput[] = []
+  inputs.forEach((input, i) => {
+    if (input.title?.trim()) valid.push(input)
+    else {
+      result.failed++
+      result.errors.push({ row: i + 2, error: 'عنوان مفقود', title: input.title })
     }
-
-    const { data, error } = await withTimeout(
-      supabase
-        .from('research_projects')
-        .insert(valid.map(v => ({ ...toServerPayload(v), created_by: auth.userId })))
-        .select('*'),
-      30_000,
-      'createResearchBulk',
-    )
-    if (error) {
-      console.error('[createResearchBulk] Supabase error:', error)
-      result.failed += valid.length
-      result.errors.push({ row: 0, error: error.message })
-      return result
-    }
-    result.ok = (data?.length ?? 0)
-    result.rows = (data ?? []) as ResearchProject[]
-    notifyRefresh()
-    return result
-  } catch (e) {
-    console.error('[createResearchBulk] threw:', e)
-    result.failed = inputs.length
-    result.errors.push({ row: 0, error: (e as Error).message || 'خطأ في الشبكة.' })
+  })
+  if (valid.length === 0) return result
+  if (!userId) {
+    result.failed += valid.length
+    result.errors.push({ row: 0, error: 'User id مفقود.' })
     return result
   }
+
+  const r = await pmnhRest<ResearchProject[]>(
+    'research_projects',
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Prefer: 'return=representation',
+      },
+      body: JSON.stringify(
+        valid.map(v => ({ ...toServerPayload(v), created_by: userId })),
+      ),
+      timeoutMs: 30_000,
+    },
+  )
+  if (!r.ok) {
+    result.failed += valid.length
+    result.errors.push({ row: 0, error: r.error })
+    return result
+  }
+  result.ok = (r.data ?? []).length
+  result.rows = r.data ?? []
+  notifyRefresh()
+  return result
 }
 
 // ============================================================
@@ -592,15 +534,6 @@ export type DataResult<T> = {
   refetch: () => void
 }
 
-/**
- * Generic React state machine around an async loader. Used by every
- * `use*` hook below; can also be used directly with a custom loader.
- *
- *   const { data, loading, error, refetch } = useDataSource(
- *     () => fetchResearch({ status: 'active' }),
- *     ['active'],
- *   )
- */
 export function useDataSource<T>(
   loader: () => Promise<T>,
   deps: unknown[] = [],
@@ -624,25 +557,11 @@ export function useDataSource<T>(
   }, deps)
 
   useEffect(() => { void load() }, [load])
-
-  // Refresh on any global mutation signal.
   useEffect(() => subscribeRefresh(() => { void load() }), [load])
 
   return { data, loading, error, refetch: load }
 }
 
-/** ---------- Specialized hooks ---------- */
-/**
- * Departments hook — calls fetchDepartments() immediately on mount.
- *
- * Per operator spec: no auth-bootstrap gate (the table is public —
- * `departments_public_read USING true`), no special handling. The
- * standard useDataSource hook fires the fetcher in its mount effect,
- * `loading` flips to false in its `finally` block whether the fetch
- * succeeded or returned [], and subscribeRefresh re-fires it on any
- * downstream mutation. The /research/new dropdown then auto-populates
- * without the operator touching the Refresh button.
- */
 export function useDepartments() {
   return useDataSource<Department[]>(fetchDepartments)
 }

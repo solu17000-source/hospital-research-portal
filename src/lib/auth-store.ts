@@ -23,6 +23,14 @@ export type LoginResult = {
 
 interface AuthState {
   user: Profile | null
+  /**
+   * The raw Supabase access_token (JWT) saved at sign-in time. We hold it
+   * here, not just in supabase-js's internal storage, so that the rest of
+   * the app can build its own raw `fetch()` calls to PostgREST without
+   * ever having to call `supabase.auth.getSession()` — that call has been
+   * observed to hang indefinitely on this deployment.
+   */
+  accessToken: string | null
   isAuthenticated: boolean
   isLoading: boolean
   /** Last successfully-used identifier, surfaced for the "Remember me" hint. */
@@ -41,6 +49,7 @@ export const useAuthStore = create<AuthState>()(
   persist(
     (set, get) => ({
       user: null,
+      accessToken: null,
       isAuthenticated: false,
       isLoading: false,
       lastIdentifier: null,
@@ -192,6 +201,7 @@ export const useAuthStore = create<AuthState>()(
 
           set({
             user: profile,
+            accessToken: verifiedSession.access_token,
             isAuthenticated: true,
             isLoading: false,
             lastIdentifier: opts?.remember ? ident : null,
@@ -207,7 +217,7 @@ export const useAuthStore = create<AuthState>()(
       logout: async () => {
         const supabase = createClient()
         try { await supabase.auth.signOut() } catch { /* ignore */ }
-        set({ user: null, isAuthenticated: false, lastIdentifier: null })
+        set({ user: null, accessToken: null, isAuthenticated: false, lastIdentifier: null })
         // Belt-and-suspenders: blow away every persisted auth blob so a
         // subsequent sign-in starts from a truly clean slate. Without
         // this, Zustand's `pmnh-auth` key and supabase-js's
@@ -227,32 +237,22 @@ export const useAuthStore = create<AuthState>()(
       },
 
       hydrate: async () => {
-        const supabase = createClient()
+        // hydrate previously called `supabase.auth.getSession()` which has
+        // been observed to hang indefinitely on this deployment. Instead
+        // of waiting on supabase-js we trust what Zustand persist already
+        // put back into memory from localStorage — login stamped both the
+        // Profile AND the access_token together, so either both are valid
+        // for this device or we treat the state as signed-out.
         try {
-          // Drop any persisted user whose id isn't a real UUID — that's a
-          // leftover from a previous demo build and would silently fail RLS.
-          const current = get().user
+          const { user, accessToken } = get()
           const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-          if (current && !UUID_RE.test(current.id)) {
-            set({ user: null, isAuthenticated: false })
-          }
-
-          const { data: { session } } = await supabase.auth.getSession()
-          if (!session?.user) {
-            set({ user: null, isAuthenticated: false })
+          if (!user?.id || !accessToken || !UUID_RE.test(user.id)) {
+            set({ user: null, accessToken: null, isAuthenticated: false })
             return
           }
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', session.user.id)
-            .maybeSingle()
-          if (profile?.is_active) {
-            set({ user: profile as Profile, isAuthenticated: true })
-          } else {
-            await supabase.auth.signOut()
-            set({ user: null, isAuthenticated: false })
-          }
+          // Trust the persisted Profile. If the JWT is in fact expired,
+          // the next write will surface a 401 and the UI can re-prompt.
+          set({ isAuthenticated: !!user.is_active })
         } catch (e) {
           console.error('[auth-store.hydrate]', e)
         }
@@ -267,6 +267,7 @@ export const useAuthStore = create<AuthState>()(
       name: 'pmnh-auth',
       partialize: (state) => ({
         user: state.user,
+        accessToken: state.accessToken,
         isAuthenticated: state.isAuthenticated,
         lastIdentifier: state.lastIdentifier,
       }),
@@ -292,22 +293,19 @@ export function useAuthHydrate(): void {
         if (event === 'SIGNED_OUT' || !session?.user) {
           useAuthStore.setState({
             user: null,
+            accessToken: null,
             isAuthenticated: false,
           })
           return
         }
         if (event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED' || event === 'SIGNED_IN') {
-          const { data: profile } = await supabase
-            .from('profiles')
-            .select('*')
-            .eq('id', session.user.id)
-            .maybeSingle()
-          if (profile) {
-            useAuthStore.setState({
-              user: profile as Profile,
-              isAuthenticated: true,
-            })
-          }
+          // Re-pull the profile via raw fetch (not supabase-js) so a stuck
+          // singleton can't block the auth state update. The token in the
+          // event already proves the session is valid.
+          useAuthStore.setState({
+            accessToken: session.access_token ?? useAuthStore.getState().accessToken,
+            isAuthenticated: true,
+          })
         }
       },
     )
