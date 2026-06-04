@@ -1,17 +1,17 @@
 'use client'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import { motion } from 'framer-motion'
 import {
   ChevronLeft, ChevronRight, Save, FlaskConical, User,
   Building2, Calendar, Shield, DollarSign, BookOpen,
-  FileText, CheckCircle, AlertCircle, RefreshCw,
+  CheckCircle, AlertCircle,
 } from 'lucide-react'
 import Link from 'next/link'
 import toast from 'react-hot-toast'
-import { createResearch, useDepartments, type ResearchInput } from '@/lib/data-source'
+import { createResearch, type ResearchInput } from '@/lib/data-source'
+import { createClient } from '@/lib/supabase'
 import { useAuthStore } from '@/lib/auth-store'
-import type { Department } from '@/types'
 import { RESEARCH_CATEGORIES, WORKFLOW_STAGES, type ApprovalStatus,
   type JournalQuartile, type IndexedDatabase, type PriorityLevel,
   type WorkflowStage } from '@/types'
@@ -30,23 +30,24 @@ const STEPS = [
 export default function NewResearchPage() {
   const router = useRouter()
   const { user } = useAuthStore()
-  // Live department list — real Supabase UUIDs. Critical: without this
-  // the dropdown emits short demo ids like "d4" that the Supabase `uuid`
-  // column rejects on insert.
-  //
-  // `loading` / `error` / `refetch` are surfaced into the dropdown UX so
-  // an intermittent fetch failure (expired JWT, brief network blip, stale
-  // tab open from before a DB migration ran, PostgREST schema cache
-  // serving stale rows) is visible to the user with a one-click recovery,
-  // instead of leaving them looking at an empty <select> and wondering
-  // why their freshly-seeded 19 rows are missing.
-  const {
-    data: deptData,
-    loading: deptLoading,
-    error: deptError,
-    refetch: refetchDepartments,
-  } = useDepartments()
-  const departments: Department[] = deptData ?? []
+
+  // Direct, no-abstraction Supabase fetch for the Department dropdown.
+  // No hook, no useDataSource, no withTimeout, no auth gate, no retry —
+  // exactly the operator's "final fix" spec. departments_public_read is
+  // `USING true` so the SELECT works for any role, signed-in or not.
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([])
+  useEffect(() => {
+    const client = createClient()
+    client
+      .from('departments')
+      .select('id, name')
+      .eq('is_active', true)
+      .order('name')
+      .then(({ data, error }) => {
+        if (error) console.error('dept error:', error)
+        else setDepartments(data || [])
+      })
+  }, [])
 
   const [step, setStep] = useState(1)
   const [saving, setSaving] = useState(false)
@@ -259,64 +260,17 @@ export default function NewResearchPage() {
             <div className="space-y-4">
               <h2 className="text-lg font-bold text-gray-900 mb-4">Department Assignment</h2>
               <div>
-                <div className="flex items-center justify-between gap-3 mb-1">
-                  <label className="form-label !mb-0">
-                    Department *
-                    <span className="ms-2 text-[11px] font-normal text-gray-400 tabular-nums">
-                      {deptLoading
-                        ? 'Loading…'
-                        : `${departments.length} option${departments.length === 1 ? '' : 's'} live from Supabase`}
-                    </span>
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => refetchDepartments()}
-                    title="Refresh department list"
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 disabled:opacity-50 transition-colors"
-                    disabled={deptLoading}
-                  >
-                    <RefreshCw className={`w-3.5 h-3.5 ${deptLoading ? 'animate-spin' : ''}`} />
-                    Refresh
-                  </button>
-                </div>
+                <label className="form-label">Department *</label>
                 <select
                   value={form.department_id}
                   onChange={e => set('department_id', e.target.value)}
                   className="form-input"
-                  disabled={deptLoading}
                 >
-                  <option value="">
-                    {deptLoading ? 'Loading departments…' : 'Select the research department'}
-                  </option>
-                  {departments.map(d => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  <option value="">Select the research department</option>
+                  {departments.map(d => (
+                    <option key={d.id} value={d.id}>{d.name}</option>
+                  ))}
                 </select>
-                {!deptLoading && departments.length === 0 && (
-                  <div className="mt-2 flex items-start gap-2 p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-800">
-                    <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                    <div className="leading-relaxed">
-                      <p className="font-semibold">No departments returned from Supabase.</p>
-                      {deptError ? (
-                        <p className="mt-0.5 font-mono text-[10px] break-all">
-                          {deptError.message}
-                        </p>
-                      ) : (
-                        <p className="mt-0.5">
-                          The query succeeded but the rowset was empty — most often a
-                          PostgREST schema cache lag right after a migration.
-                        </p>
-                      )}
-                      <p className="mt-1.5">
-                        Click <span className="font-bold">Refresh</span> above. If that
-                        keeps returning zero, hard-refresh the tab (Ctrl+Shift+R) and
-                        then sign out and back in.
-                      </p>
-                      <p className="mt-1 text-[10px] opacity-70">
-                        Check the browser console for a <span className="font-mono">[fetchDepartments]</span> error
-                        line — it will print the underlying Supabase response.
-                      </p>
-                    </div>
-                  </div>
-                )}
               </div>
               <div>
                 <label className="form-label">Priority Level</label>
